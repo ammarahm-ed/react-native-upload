@@ -1,13 +1,15 @@
 {
-  "name": "@appfolio/react-native-upload",
-  "version": "6.15.0",
+  "name": "@ammarahmed/react-native-upload",
+  "version": "6.16.0",
   "description": "Cross platform http post file uploader with Android and iOS background support.",
-  "main": "src/index.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
     "lint": "yarn lint:ci --fix",
     "lint:ci": "eslint src example",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "release": "semantic-release"
+    "release": "semantic-release",
+    "build": "npx tsc"
   },
   "keywords": [
     "NSURLSession",
@@ -41,11 +43,12 @@
     "@semantic-release/github": "^8.0.0",
     "@semantic-release/npm": "^9.0.0",
     "@semantic-release/release-notes-generator": "^10.0.0",
-    "@types/react-native": "^0.64.0",
+    "react-native": "0.82.1",
     "eslint": "^6.8.0",
     "husky": "^4.2.3",
     "lint-staged": "^10.0.8",
-    "semantic-release": "^19.0.2"
+    "semantic-release": "^19.0.2",
+    "typescript": "5.9.3"
   },
   "release": {
     "plugins": [

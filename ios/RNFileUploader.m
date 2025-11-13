@@ -4,14 +4,14 @@
 #import <React/RCTBridgeModule.h>
 #import <Photos/Photos.h>
 
-#import "VydiaRNFileUploader.h"
+#import "RNFileUploader.h"
 
-@implementation VydiaRNFileUploader
+@implementation RNFileUploader
 
 RCT_EXPORT_MODULE();
 
 @synthesize bridge = _bridge;
-static VydiaRNFileUploader* staticInstance = nil;
+static RNFileUploader* staticInstance = nil;
 static NSString *BACKGROUND_SESSION_ID = @"ReactNativeBackgroundUpload";
 NSMutableDictionary *_responsesData;
 NSURLSession *_urlSession = nil;
