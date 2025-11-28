@@ -7,18 +7,24 @@ import android.content.Context
 import android.os.Build
 import android.util.Log
 import android.webkit.MimeTypeMap
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
-import com.appfolio.work.UploadManager
-import com.appfolio.work.UploadWorker
 import com.facebook.react.BuildConfig
 import com.facebook.react.bridge.*
+import net.gotev.uploadservice.UploadServiceConfig
+import net.gotev.uploadservice.UploadServiceConfig.defaultNotificationChannel
 import net.gotev.uploadservice.UploadServiceConfig.httpStack
 import net.gotev.uploadservice.UploadServiceConfig.initialize
+import net.gotev.uploadservice.UploadWorker
 import net.gotev.uploadservice.data.UploadNotificationConfig
 import net.gotev.uploadservice.data.UploadNotificationStatusConfig
+import net.gotev.uploadservice.extensions.startNewUpload
 import net.gotev.uploadservice.observer.request.GlobalRequestObserver
 import net.gotev.uploadservice.okhttp.OkHttpStack
+import net.gotev.uploadservice.placeholders.Placeholder
+import net.gotev.uploadservice.protocols.binary.BinaryUploadRequest
+import net.gotev.uploadservice.protocols.multipart.MultipartUploadRequest
 import okhttp3.OkHttpClient
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -119,6 +125,7 @@ class UploaderModule(val reactContext: ReactApplicationContext) : ReactContextBa
       }
       readTimeout = options.getInt("readTimeout")
     }
+
     httpStack = OkHttpStack(OkHttpClient().newBuilder()
             .followRedirects(followRedirects)
             .followSslRedirects(followSslRedirects)
@@ -197,7 +204,7 @@ class UploaderModule(val reactContext: ReactApplicationContext) : ReactContextBa
     val customUploadId = if (options.hasKey("customUploadId") && options.getType("method") == ReadableType.String) options.getString("customUploadId") else null
     try {
       val request = if (requestType == "raw") {
-        ModifiedBinaryUploadRequest(this.reactApplicationContext, url!!, limitNetwork)
+        BinaryUploadRequest(this.reactApplicationContext, url!!)
                 .setFileToUpload(filePath!!)
       } else {
         if (!options.hasKey("field")) {
@@ -208,36 +215,46 @@ class UploaderModule(val reactContext: ReactApplicationContext) : ReactContextBa
           promise.reject(java.lang.IllegalArgumentException("field must be string."))
           return
         }
-        ModifiedMultipartUploadRequest(this.reactApplicationContext, url!!, limitNetwork)
+        MultipartUploadRequest(this.reactApplicationContext, url!!)
                 .addFileToUpload(filePath!!, options.getString("field")!!)
       }
       request.setMethod(method!!)
               .setMaxRetries(maxRetries)
-      if (notification.getBoolean("enabled")) {
-        val notificationConfig = UploadNotificationConfig(
-                notificationChannelId = notificationChannelID,
-                isRingToneEnabled = notification.hasKey("enableRingTone") && notification.getBoolean("enableRingTone"),
-                progress = UploadNotificationStatusConfig(
-                        title = if (notification.hasKey("onProgressTitle")) notification.getString("onProgressTitle")!! else "",
-                        message = if (notification.hasKey("onProgressMessage")) notification.getString("onProgressMessage")!! else ""
-                ),
-                success = UploadNotificationStatusConfig(
-                        title = if (notification.hasKey("onCompleteTitle")) notification.getString("onCompleteTitle")!! else "",
-                        message = if (notification.hasKey("onCompleteMessage")) notification.getString("onCompleteMessage")!! else "",
-                        autoClear = notification.hasKey("autoClear") && notification.getBoolean("autoClear")
-                ),
-                error = UploadNotificationStatusConfig(
-                        title = if (notification.hasKey("onErrorTitle")) notification.getString("onErrorTitle")!! else "",
-                        message = if (notification.hasKey("onErrorMessage")) notification.getString("onErrorMessage")!! else ""
-                ),
-                cancelled = UploadNotificationStatusConfig(
-                        title = if (notification.hasKey("onCancelledTitle")) notification.getString("onCancelledTitle")!! else "",
-                        message = if (notification.hasKey("onCancelledMessage")) notification.getString("onCancelledMessage")!! else ""
-                )
+
+      val filename = notification.getString("filename")
+      val notificationConfig =  UploadNotificationConfig(
+        notificationChannelId = defaultNotificationChannel!!,
+        isRingToneEnabled = true,
+        progress = UploadNotificationStatusConfig(
+          title = "Uploading ${filename}",
+          message = "Uploading at ${Placeholder.UploadRate} (${Placeholder.Progress})",
+//                actions = arrayListOf(
+//                    UploadNotificationAction(
+//                        icon = android.R.drawable.ic_menu_close_clear_cancel,
+//                        title = "Cancel",
+//                        intent = context.getCancelUploadIntent(uploadId)
+//                    )
+//                )
+        ),
+        success = UploadNotificationStatusConfig(
+          title = "Upload complete",
+          message = "Upload completed successfully in ${Placeholder.ElapsedTime}",
+          autoClear = true
+        ),
+        error = UploadNotificationStatusConfig(
+          title = "Upload failed",
+          message = "Error uploading ${filename}",
+          autoClear = true
+        ),
+        cancelled = UploadNotificationStatusConfig(
+          title = "Upload cancelled",
+          message = "Upload cancelled",
+          autoClear = true
         )
-        request.setNotificationConfig { _, _ ->
-          notificationConfig
-        }
+      )
+
+      request.setNotificationConfig { _, _ ->
+        notificationConfig
       }
       if (options.hasKey("parameters")) {
         if (requestType == "raw") {
@@ -268,8 +285,7 @@ class UploaderModule(val reactContext: ReactApplicationContext) : ReactContextBa
         }
       }
       if (customUploadId != null)
-        request.setCustomUploadID(customUploadId)
-
+        request.setUploadID(customUploadId)
       val uploadId = request.startUpload()
       promise.resolve(uploadId)
     } catch (exc: java.lang.Exception) {
@@ -290,8 +306,12 @@ class UploaderModule(val reactContext: ReactApplicationContext) : ReactContextBa
       promise.reject(java.lang.IllegalArgumentException("Upload ID must be a string"))
       return
     }
+
     try {
-      UploadManager.stopUpload(cancelUploadId)
+      UploadWorker.stopUpload(cancelUploadId);
+      val params = Arguments.createMap()
+      params.putString("id", cancelUploadId)
+      this.reactContext.emitDeviceEvent("RNFileUploader-cancelled", params)
       promise.resolve(true)
     } catch (exc: java.lang.Exception) {
       exc.printStackTrace()
@@ -306,7 +326,12 @@ class UploaderModule(val reactContext: ReactApplicationContext) : ReactContextBa
   @ReactMethod
   fun stopAllUploads(promise: Promise) {
     try {
-      UploadManager.stopAllUploads()
+      UploadWorker.stopAllUploads()
+      UploadWorker.taskList.forEach {
+        val params = Arguments.createMap()
+        params.putString("id", it)
+        this.reactContext.emitDeviceEvent("RNFileUploader-cancelled", params);
+      }
       promise.resolve(true)
     } catch (exc: java.lang.Exception) {
       exc.printStackTrace()
@@ -330,6 +355,7 @@ class UploaderModule(val reactContext: ReactApplicationContext) : ReactContextBa
         continue
       }
 
+
       val upload = Arguments.createMap()
       
       val idTag = info.tags.toTypedArray().find { it.startsWith(UploadWorker::class.java.simpleName) }
@@ -349,7 +375,7 @@ class UploaderModule(val reactContext: ReactApplicationContext) : ReactContextBa
       uploads.pushMap(upload)
     }
 
-    val uploadTaskList = UploadManager.taskList
+    val uploadTaskList = UploadWorker.taskList
     for (task in uploadTaskList) {
       val upload = Arguments.createMap()
       upload.putString("id", task)

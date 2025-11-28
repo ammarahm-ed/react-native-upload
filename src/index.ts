@@ -11,6 +11,7 @@ import {
 export type UploadEvent = 'progress' | 'error' | 'completed' | 'cancelled';
 
 export type NotificationOptions = {
+  filename: string;
   /**
    * Enable or diasable notifications. Works only on Android version < 8.0 Oreo. On Android versions >= 8.0 Oreo is required by Google's policy to display a notification when a background service run  { enabled: true }
    */
@@ -100,6 +101,8 @@ export interface FileInfo {
 export interface ProgressData {
   id: string;
   progress: number;
+  totalBytes: number;
+  uploadedBytes: number;
 }
 
 export interface ErrorData {
@@ -124,12 +127,11 @@ export type UploadEventData =
   | CancelledData
   | CompletedData;
 
-const NativeModule =
-  NativeModules.VydiaRNFileUploader || NativeModules.RNFileUploader;
+const NativeModule = NativeModules.RNFileUploader;
 const eventPrefix = 'RNFileUploader-';
 
 // for IOS, register event listeners or else they don't fire on DeviceEventEmitter
-if (NativeModules.VydiaRNFileUploader) {
+if (NativeModules.RNFileUploader && NativeModule.addListener) {
   NativeModule.addListener(eventPrefix + 'progress');
   NativeModule.addListener(eventPrefix + 'error');
   NativeModule.addListener(eventPrefix + 'cancelled');
@@ -150,6 +152,8 @@ export interface UploadChangeEvent {
   status: UploadStatus;
   progress?: number;
   error?: string;
+  totalBytes?: number;
+  uploadedBytes?: number;
   responseCode?: number;
   responseBody?: string | null;
 }
@@ -205,7 +209,7 @@ class Upload {
   private startPromise: Promise<UploadResult> | null = null;
   private resolveStart: ((result: UploadResult) => void) | null = null;
   private rejectStart: ((error: Error) => void) | null = null;
-  private changeCallback: ((event: UploadChangeEvent) => void) | null = null;
+  private changeCallbacks: ((event: UploadChangeEvent) => void)[] = [];
 
   constructor(config: UploadOptions) {
     this.config = config;
@@ -219,6 +223,7 @@ class Upload {
     const existingUpload = config.customUploadId
       ? UploadRegistry.getById(config.customUploadId)
       : null;
+
     if (existingUpload && existingUpload.isRunning()) {
       console.warn(
         `Upload already in progress for path: ${
@@ -255,8 +260,14 @@ class Upload {
     upload.uploadId = uploadId;
     upload.status = upload.mapNativeStateToStatus(uploadInfo.state);
 
+    upload.startPromise = new Promise<UploadResult>((resolve, reject) => {
+      upload.resolveStart = resolve;
+      upload.rejectStart = reject;
+    });
+
     // Register and setup listeners
     UploadRegistry.register(upload);
+
     upload.setupEventListeners();
 
     return upload;
@@ -275,7 +286,9 @@ class Upload {
    * Set a callback to be called whenever the upload state changes
    */
   onChange(callback: (event: UploadChangeEvent) => void): this {
-    this.changeCallback = callback;
+    if (!this.changeCallbacks.find(cb => cb === callback)) {
+      this.changeCallbacks.push(callback);
+    }
     return this;
   }
 
@@ -283,22 +296,20 @@ class Upload {
    * Start the upload - resolves when upload completes, is cancelled, or errors
    */
   async start(): Promise<UploadResult> {
-    if (this.uploadId) {
-      throw new Error('Upload already started');
-    }
-
-    if (this.startPromise) {
+    if (this.uploadId && this.startPromise) {
       return this.startPromise;
     }
-
     // Check if there's an existing upload for this path in native side
-    if (this.config.path) {
+    if (this.config.customUploadId) {
       const nativeUploads = await getAllUploads();
       const existingUpload = nativeUploads.find(
-        u => u.state === 'running' || u.state === 'pending',
+        u =>
+          u.id === this.config.customUploadId &&
+          u.state !== 'error' &&
+          u.state !== 'cancelled',
       );
 
-      if (existingUpload && !this.config.customUploadId) {
+      if (existingUpload) {
         console.warn(
           `Found existing upload in native side. Resuming upload: ${
             existingUpload.id
@@ -345,6 +356,8 @@ class Upload {
           this.notifyChange({
             status: UploadState.Running,
             progress: data.progress,
+            uploadedBytes: data.uploadedBytes,
+            totalBytes: data.totalBytes,
           });
         }
       },
@@ -417,8 +430,8 @@ class Upload {
   }
 
   private notifyChange(event: UploadChangeEvent): void {
-    if (this.changeCallback) {
-      this.changeCallback(event);
+    if (this.changeCallbacks.length) {
+      this.changeCallbacks.forEach(cb => cb(event));
     }
   }
 
@@ -540,8 +553,9 @@ export const shouldLimitNetwork = (limit: boolean): void => {
   NativeModule.shouldLimitNetwork(limit);
 };
 
-export const getAllUploads = (): Promise<NativeUploadInfo[]> => {
-  return NativeModule.getAllUploads();
+export const getAllUploads = async (): Promise<NativeUploadInfo[]> => {
+  const allUploads = await NativeModule.getAllUploads();
+  return allUploads;
 };
 
 export { Upload };

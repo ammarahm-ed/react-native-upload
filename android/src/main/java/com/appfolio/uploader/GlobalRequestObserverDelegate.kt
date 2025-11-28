@@ -40,7 +40,8 @@ class GlobalRequestObserverDelegate(reactContext: ReactApplicationContext) : Req
     val params = Arguments.createMap()
     params.putString("id", uploadInfo.uploadId)
     params.putInt("progress", uploadInfo.progressPercent) //0-100
-
+    params.putDouble("totalBytes", uploadInfo.totalBytes.toDouble())
+    params.putDouble("uploadedBytes", uploadInfo.uploadedBytes.toDouble())
     sendEvent("progress", params, context)
   }
 
@@ -49,6 +50,9 @@ class GlobalRequestObserverDelegate(reactContext: ReactApplicationContext) : Req
     params.putString("id", uploadInfo.uploadId)
     params.putInt("responseCode", serverResponse.code)
     params.putString("responseBody", serverResponse.bodyString)
+    params.putInt("progress", uploadInfo.progressPercent)
+    params.putDouble("totalBytes", uploadInfo.totalBytes.toDouble())
+    params.putDouble("uploadedBytes", uploadInfo.uploadedBytes.toDouble())
     sendEvent("completed", params, context)
   }
 

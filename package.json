@@ -1,6 +1,6 @@
 {
   "name": "@ammarahmed/react-native-upload",
-  "version": "6.16.0",
+  "version": "6.27.0",
   "description": "Cross platform http post file uploader with Android and iOS background support.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -26,15 +26,12 @@
   "author": "Steve Potter",
   "license": "BSD-3-Clause",
   "bugs": {
-    "url": "https://github.com/appfolio/react-native-upload/issues"
+    "url": "https://github.com/ammarahm-ed/react-native-upload/issues"
   },
-  "homepage": "https://github.com/appfolio/react-native-upload",
+  "homepage": "https://github.com/ammarahm-ed/react-native-upload",
   "repository": {
     "type": "git",
-    "url": "https://github.com/appfolio/react-native-upload.git"
-  },
-  "publishConfig": {
-    "registry": "https://npm.pkg.github.com/"
+    "url": "https://github.com/ammarahm-ed/react-native-upload.git"
   },
   "devDependencies": {
     "@react-native-community/eslint-config": "^0.0.7",

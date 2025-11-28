@@ -72,10 +72,7 @@ dependencies {
 
     implementation "org.jetbrains.kotlin:$_kotlinStdlib:$_kotlinVersion"
 
-    //noinspection GradleDependency
-    implementation 'net.gotev:uploadservice:4.9.4'
-    //noinspection GradleDependency
-    implementation 'net.gotev:uploadservice-okhttp:4.9.4'
+    implementation 'com.github.ammarahm-ed:android-upload-service:5732c9295bb2193f8ecb8144970d18d65e33618e'
 
     implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
     implementation 'com.google.code.gson:gson:2.10.1'

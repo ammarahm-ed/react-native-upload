@@ -38,10 +38,10 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
  * Handles HTTP background file uploads from an iOS or Android device.
  */
 import { NativeModules, DeviceEventEmitter, Platform, } from 'react-native';
-var NativeModule = NativeModules.VydiaRNFileUploader || NativeModules.RNFileUploader;
+var NativeModule = NativeModules.RNFileUploader;
 var eventPrefix = 'RNFileUploader-';
 // for IOS, register event listeners or else they don't fire on DeviceEventEmitter
-if (NativeModules.VydiaRNFileUploader) {
+if (NativeModules.RNFileUploader && NativeModule.addListener) {
     NativeModule.addListener(eventPrefix + 'progress');
     NativeModule.addListener(eventPrefix + 'error');
     NativeModule.addListener(eventPrefix + 'cancelled');
@@ -90,7 +90,7 @@ var Upload = /** @class */ (function () {
         this.startPromise = null;
         this.resolveStart = null;
         this.rejectStart = null;
-        this.changeCallback = null;
+        this.changeCallbacks = [];
         this.config = config;
     }
     /**
@@ -131,6 +131,10 @@ var Upload = /** @class */ (function () {
                         upload = new Upload({ url: '', path: '' });
                         upload.uploadId = uploadId;
                         upload.status = upload.mapNativeStateToStatus(uploadInfo.state);
+                        upload.startPromise = new Promise(function (resolve, reject) {
+                            upload.resolveStart = resolve;
+                            upload.rejectStart = reject;
+                        });
                         // Register and setup listeners
                         UploadRegistry.register(upload);
                         upload.setupEventListeners();
@@ -151,7 +155,9 @@ var Upload = /** @class */ (function () {
      * Set a callback to be called whenever the upload state changes
      */
     Upload.prototype.onChange = function (callback) {
-        this.changeCallback = callback;
+        if (!this.changeCallbacks.find(function (cb) { return cb === callback; })) {
+            this.changeCallbacks.push(callback);
+        }
         return this;
     };
     /**
@@ -164,18 +170,19 @@ var Upload = /** @class */ (function () {
             return __generator(this, function (_b) {
                 switch (_b.label) {
                     case 0:
-                        if (this.uploadId) {
-                            throw new Error('Upload already started');
-                        }
-                        if (this.startPromise) {
+                        if (this.uploadId && this.startPromise) {
                             return [2 /*return*/, this.startPromise];
                         }
-                        if (!this.config.path) return [3 /*break*/, 2];
+                        if (!this.config.customUploadId) return [3 /*break*/, 2];
                         return [4 /*yield*/, getAllUploads()];
                     case 1:
                         nativeUploads = _b.sent();
-                        existingUpload = nativeUploads.find(function (u) { return u.state === 'running' || u.state === 'pending'; });
-                        if (existingUpload && !this.config.customUploadId) {
+                        existingUpload = nativeUploads.find(function (u) {
+                            return u.id === _this.config.customUploadId &&
+                                u.state !== 'error' &&
+                                u.state !== 'cancelled';
+                        });
+                        if (existingUpload) {
                             console.warn("Found existing upload in native side. Resuming upload: ".concat(existingUpload.id));
                             this.uploadId = existingUpload.id;
                             this.status = this.mapNativeStateToStatus(existingUpload.state);
@@ -220,6 +227,8 @@ var Upload = /** @class */ (function () {
                 _this.notifyChange({
                     status: UploadState.Running,
                     progress: data.progress,
+                    uploadedBytes: data.uploadedBytes,
+                    totalBytes: data.totalBytes,
                 });
             }
         });
@@ -267,8 +276,8 @@ var Upload = /** @class */ (function () {
         this.notifyChange({ status: status, error: error, responseCode: responseCode, responseBody: responseBody });
     };
     Upload.prototype.notifyChange = function (event) {
-        if (this.changeCallback) {
-            this.changeCallback(event);
+        if (this.changeCallbacks.length) {
+            this.changeCallbacks.forEach(function (cb) { return cb(event); });
         }
     };
     Upload.prototype.mapNativeStateToStatus = function (state) {
@@ -383,8 +392,16 @@ export var canSuspendIfBackground = function () {
 export var shouldLimitNetwork = function (limit) {
     NativeModule.shouldLimitNetwork(limit);
 };
-export var getAllUploads = function () {
-    return NativeModule.getAllUploads();
-};
+export var getAllUploads = function () { return __awaiter(void 0, void 0, void 0, function () {
+    var allUploads;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0: return [4 /*yield*/, NativeModule.getAllUploads()];
+            case 1:
+                allUploads = _a.sent();
+                return [2 /*return*/, allUploads];
+        }
+    });
+}); };
 export { Upload };
 export default Upload;

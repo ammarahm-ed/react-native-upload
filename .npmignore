@@ -5,7 +5,7 @@
 /android/build
 /ios/build
 xcuserdata*
-src
+./src
 example
 tmp
 tsconfig.json

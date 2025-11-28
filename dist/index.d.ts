@@ -4,6 +4,7 @@
 import { EmitterSubscription } from 'react-native';
 export type UploadEvent = 'progress' | 'error' | 'completed' | 'cancelled';
 export type NotificationOptions = {
+    filename: string;
     /**
      * Enable or diasable notifications. Works only on Android version < 8.0 Oreo. On Android versions >= 8.0 Oreo is required by Google's policy to display a notification when a background service run  { enabled: true }
      */
@@ -89,6 +90,8 @@ export interface FileInfo {
 export interface ProgressData {
     id: string;
     progress: number;
+    totalBytes: number;
+    uploadedBytes: number;
 }
 export interface ErrorData {
     id: string;
@@ -116,6 +119,8 @@ export interface UploadChangeEvent {
     status: UploadStatus;
     progress?: number;
     error?: string;
+    totalBytes?: number;
+    uploadedBytes?: number;
     responseCode?: number;
     responseBody?: string | null;
 }
@@ -137,7 +142,7 @@ declare class Upload {
     private startPromise;
     private resolveStart;
     private rejectStart;
-    private changeCallback;
+    private changeCallbacks;
     constructor(config: UploadOptions);
     /**
      * Create a new upload instance or return existing one for the same path
