@@ -64,7 +64,7 @@ class UploaderModule(val reactContext: ReactApplicationContext) : ReactContextBa
         params.putString("size", fileInfo.length().toString()) //use string form of long because there is no putLong and converting to int results in a max size of 17.2 gb, which could happen.  Javascript will need to convert it to a number
         val extension = MimeTypeMap.getFileExtensionFromUrl(path)
         params.putString("extension", extension)
-        val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension.toLowerCase())
+        val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension.lowercase())
         params.putString("mimeType", mimeType)
       }
       promise.resolve(params)
