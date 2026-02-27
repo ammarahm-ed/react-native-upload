@@ -253,7 +253,12 @@ var Upload = /** @class */ (function () {
             if (_this.uploadId && data.id === _this.uploadId) {
                 _this.updateStatus(UploadState.Error, data.error);
                 if (_this.resolveStart) {
-                    _this.resolveStart({ status: 'error', error: data.error });
+                    _this.resolveStart({
+                        status: 'error',
+                        error: data.error,
+                        responseBody: data.responseBody,
+                        responseCode: data.responseCode,
+                    });
                 }
                 _this.cleanup();
             }

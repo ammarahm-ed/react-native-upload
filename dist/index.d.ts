@@ -93,10 +93,6 @@ export interface ProgressData {
     totalBytes: number;
     uploadedBytes: number;
 }
-export interface ErrorData {
-    id: string;
-    error: string;
-}
 export interface CancelledData {
     id: string;
     error: string;
@@ -105,6 +101,9 @@ export interface CompletedData {
     id: string;
     responseCode?: number;
     responseBody?: string | null;
+}
+export interface ErrorData extends CompletedData {
+    error: string;
 }
 export type UploadEventData = ProgressData | ErrorData | CancelledData | CompletedData;
 export declare const UploadState: {

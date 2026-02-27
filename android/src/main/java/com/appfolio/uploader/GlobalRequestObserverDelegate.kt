@@ -7,6 +7,8 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule.RCTDeviceEventEmitter
 import net.gotev.uploadservice.data.UploadInfo
+import net.gotev.uploadservice.exceptions.UploadError
+import net.gotev.uploadservice.exceptions.UserCancelledUploadException
 import net.gotev.uploadservice.network.ServerResponse
 import net.gotev.uploadservice.observer.request.RequestObserverDelegate
 
@@ -22,19 +24,32 @@ class GlobalRequestObserverDelegate(reactContext: ReactApplicationContext) : Req
   }
 
   override fun onError(context: Context, uploadInfo: UploadInfo, exception: Throwable) {
-
     val params = Arguments.createMap()
     params.putString("id", uploadInfo.uploadId)
+    when (exception) {
+      is UserCancelledUploadException -> {
+        params.putString("error", "User cancelled upload")
+        params.putInt("responseCode", 0)
+        params.putString("responseBody", "")
+      }
 
-    // Make sure we do not try to call getMessage() on a null object
-    if (exception != null) {
-      params.putString("error", exception.message)
-    } else {
-      params.putString("error", "Unknown exception")
+      is UploadError -> {
+        Log.e("RECEIVER", "Error, upload error: ${exception.serverResponse}")
+        params.putString("error", exception.message)
+        params.putInt("responseCode", exception.serverResponse.code)
+        params.putString("responseBody", exception.serverResponse.bodyString)
+      }
+
+      else -> {
+        params.putString("error", exception.message)
+        params.putInt("responseCode", 0)
+        params.putString("responseBody", "")
+      }
     }
 
     sendEvent("error", params, context)
   }
+
 
   override fun onProgress(context: Context, uploadInfo: UploadInfo) {
     val params = Arguments.createMap()

@@ -1,6 +1,6 @@
 {
   "name": "@ammarahmed/react-native-upload",
-  "version": "6.27.0",
+  "version": "6.32.0",
   "description": "Cross platform http post file uploader with Android and iOS background support.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
