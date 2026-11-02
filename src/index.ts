@@ -158,7 +158,9 @@ export interface MultipartS3Options {
    */
   appGroup?: string;
   /**
-   * Array of previously uploaded chunk ETags (in order) for resuming an existing upload session.
+   * Fixed-length array of previously uploaded chunk ETags (matching parts array length)
+   * for resuming an existing upload session. Completed parts carry their ETag string,
+   * while uncompleted parts carry empty string "".
    * Already uploaded chunks will be skipped and pre-filled with these ETags.
    */
   existingEtags?: string[];

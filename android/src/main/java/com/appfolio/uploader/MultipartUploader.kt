@@ -38,6 +38,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
         val job: CompletableJob = Job(),
         val isPaused: AtomicBoolean = AtomicBoolean(false),
         val totalBytes: Long,
+        val partsCount: Int,
         val bytesUploaded: AtomicLong,
         val completedChunks: AtomicLong,
         val partETags: ConcurrentHashMap<Int, String>,
@@ -103,6 +104,19 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
         val filename = notificationMap?.getString("filename") ?: file.name
 
         val fileSize = file.length()
+        if (fileSize <= 0) {
+            throw IllegalArgumentException("File is empty or invalid: $filePath")
+        }
+
+        // S3 multipart requires all parts except the last to be >= 5MB (MIN_CHUNK_SIZE).
+        // If fileSize <= (partsCount - 1) * MIN_CHUNK_SIZE, partsCount is invalid for this file size.
+        val minRequiredSize = MIN_CHUNK_SIZE * (partsCount - 1)
+        if (partsCount > 1 && fileSize <= minRequiredSize) {
+            throw IllegalArgumentException(
+                "File size ($fileSize bytes) is too small for $partsCount parts. Minimum required size: " + (minRequiredSize + 1) + " bytes."
+            )
+        }
+
         val calculatedChunkSize = Math.ceil(fileSize.toDouble() / partsCount).toLong()
         val chunkSize = Math.max(calculatedChunkSize, MIN_CHUNK_SIZE)
 
@@ -134,6 +148,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
             uploadId = uploadId,
             job = Job(parentJob),
             totalBytes = fileSize,
+            partsCount = partsCount,
             bytesUploaded = AtomicLong(initialUploadedBytes),
             completedChunks = AtomicLong(initialCompleted),
             partETags = initialETags
@@ -158,6 +173,12 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
             progressParams.putDouble("bytesUploaded", initialUploadedBytes.toDouble())
             progressParams.putDouble("totalBytes", fileSize.toDouble())
             progressParams.putInt("chunkIndex", (initialCompleted - 1).toInt())
+            val currentEtags = Arguments.createArray()
+            for (i in 0 until partsCount) {
+                val pNum = i + 1
+                currentEtags.pushString(initialETags[pNum] ?: "")
+            }
+            progressParams.putArray("etags", currentEtags)
             emitEvent("RNFileUploader-multipart-progress", progressParams)
         }
 
@@ -170,6 +191,11 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
                         fileSize - offset
                     } else {
                         chunkSize
+                    }
+                    if (size <= 0) {
+                        throw IllegalArgumentException(
+                            "Part $partNumber has invalid size ($size bytes). Offset: $offset, FileSize: $fileSize"
+                        )
                     }
                     PartInfo(partNumber, url, offset, size)
                 }
@@ -326,7 +352,10 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
                 progressParams.putInt("chunkIndex", part.partNumber - 1)
                 progressParams.putString("etag", etag)
                 val currentEtags = Arguments.createArray()
-                uploadJob.partETags.toSortedMap().values.forEach { currentEtags.pushString(it) }
+                for (i in 0 until uploadJob.partsCount) {
+                    val pNum = i + 1
+                    currentEtags.pushString(uploadJob.partETags[pNum] ?: "")
+                }
                 progressParams.putArray("etags", currentEtags)
                 emitEvent("RNFileUploader-multipart-progress", progressParams)
 

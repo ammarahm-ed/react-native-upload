@@ -191,14 +191,14 @@ try {
 
 ### Resumption on Network Failure
 
-If an upload is interrupted or network drops, you can resume by passing `existingEtags`:
+If an upload is interrupted or network drops, you can resume by passing `existingEtags`. `onProgress` emits an `etags` array matching the parts list (with empty strings for pending parts):
 
 ```typescript
 const upload = Upload.createMultipartS3({
   uploadId: savedUploadId, // Re-use the existing S3 upload ID
   path: "/path/to/large-video.mp4",
   parts: presignedUrls,
-  existingEtags: savedEtags, // Chunks 0..(savedEtags.length - 1) will be skipped
+  existingEtags: savedEtags, // Fixed-length array with ETags for completed parts, "" for pending parts
 });
 ```
 
