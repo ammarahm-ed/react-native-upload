@@ -12,7 +12,7 @@ import {
 import Upload from '@ammarahmed/react-native-upload';
 import { generateFile, simpleUploadPath } from './src/files';
 import { runAll, startBackgroundUpload } from './src/scenarios';
-import { attachBackgroundCompletion } from './src/background';
+import { recoverPendingUploads } from './src/background';
 import {
   Failure,
   completeS3Upload,
@@ -177,7 +177,7 @@ export default function App() {
       log(line);
       return fetch(`${base}/report`, { method: 'POST', body: line }).then(() => {}, () => {});
     };
-    const detach = attachBackgroundCompletion(report);
+    recoverPendingUploads(report).catch(e => report(`recover failed: ${e.message}`));
     fetch(`${base}/autorun`)
       .then(r => r.json())
       .then(r => {
@@ -186,7 +186,6 @@ export default function App() {
         else runSuite();
       })
       .catch(() => {});
-    return detach;
   }, []);
 
   const withId = async (name: string, fn: (id: string) => Promise<boolean>) => {

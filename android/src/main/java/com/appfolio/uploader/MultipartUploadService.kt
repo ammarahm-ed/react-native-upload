@@ -124,7 +124,23 @@ class MultipartUploadService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        if (intent == null) {
+            val resumed = MultipartUploader.getInstance(this).resumeInterrupted().firstOrNull { it.notificationEnabled }
+            if (resumed == null) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            try {
+                ensureChannel(this, resumed.channelName)
+                startForegroundWithNotification(resumed.title, 0, resumed.resumeMessage)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed startForeground on restart: ${e.message}")
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            return START_STICKY
+        }
+        when (intent.action) {
             ACTION_START -> {
                 val title = intent.getStringExtra(EXTRA_TITLE) ?: ""
                 val message = intent.getStringExtra(EXTRA_MESSAGE) ?: ""
@@ -140,7 +156,7 @@ class MultipartUploadService : Service() {
                 stopForegroundAndSelf()
             }
         }
-        return START_NOT_STICKY
+        return if (intent.action == ACTION_START) START_STICKY else START_NOT_STICKY
     }
 
     private fun startForegroundWithNotification(title: String, progress: Int, message: String) {

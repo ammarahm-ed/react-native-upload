@@ -400,14 +400,18 @@ class UploaderModule(val reactContext: ReactApplicationContext) : ReactContextBa
     }
   }
 
-  private val multipartUploader by lazy { MultipartUploader(reactContext) }
+  private val multipartUploader = MultipartUploader.getInstance(reactContext)
+
+  init {
+    multipartUploader.attachReactContext(reactContext)
+  }
   private val moduleScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
   @ReactMethod
   fun startMultipartUpload(options: ReadableMap, promise: Promise) {
     moduleScope.launch {
       try {
-        val result = multipartUploader.startMultipartUpload(options)
+        val result = multipartUploader.startMultipartUpload(UploadParams.fromReadableMap(options))
         promise.resolve(result)
       } catch (e: CancellationException) {
         promise.reject("CANCELLED", "Upload cancelled")
@@ -433,7 +437,7 @@ class UploaderModule(val reactContext: ReactApplicationContext) : ReactContextBa
 
   @ReactMethod
   fun getMultipartUploads(promise: Promise) {
-    promise.resolve(Arguments.createArray())
+    promise.resolve(multipartUploader.pendingUploads())
   }
 
   @ReactMethod
@@ -465,6 +469,7 @@ class UploaderModule(val reactContext: ReactApplicationContext) : ReactContextBa
   }
 
   override fun invalidate() {
+    multipartUploader.detachReactContext(reactContext)
     moduleScope.cancel()
     super.invalidate()
   }

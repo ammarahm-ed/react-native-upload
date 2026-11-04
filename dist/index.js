@@ -62,8 +62,63 @@ if (NativeModules.RNFileUploader && NativeModule.addListener) {
     NativeModule.addListener(eventPrefix + 'multipart-cancelled');
     NativeModule.addListener(eventPrefix + 'multipart-completed');
 }
+var multipartCompletionHandler = null;
+var runningCompletions = new Map();
+var runMultipartCompletion = function (event) {
+    var running = runningCompletions.get(event.uploadId);
+    if (running) {
+        return running;
+    }
+    var handler = multipartCompletionHandler;
+    if (!handler) {
+        return Promise.resolve();
+    }
+    var run = (function () { return __awaiter(void 0, void 0, void 0, function () {
+        var error_1;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0:
+                    _a.trys.push([0, 3, 4, 5]);
+                    return [4 /*yield*/, handler(event)];
+                case 1:
+                    _a.sent();
+                    return [4 /*yield*/, NativeModule.acknowledgeMultipartUpload(event.uploadId)];
+                case 2:
+                    _a.sent();
+                    return [3 /*break*/, 5];
+                case 3:
+                    error_1 = _a.sent();
+                    console.warn("Multipart completion handler failed for ".concat(event.uploadId), error_1);
+                    return [3 /*break*/, 5];
+                case 4:
+                    runningCompletions.delete(event.uploadId);
+                    return [7 /*endfinally*/];
+                case 5: return [2 /*return*/];
+            }
+        });
+    }); })();
+    runningCompletions.set(event.uploadId, run);
+    return run;
+};
+DeviceEventEmitter.addListener(eventPrefix + 'multipart-completed', function (data) {
+    runMultipartCompletion({
+        uploadId: data.uploadId,
+        status: 'completed',
+        etags: data.etags || [],
+        error: null,
+    });
+});
+DeviceEventEmitter.addListener(eventPrefix + 'multipart-error', function (data) {
+    runMultipartCompletion({
+        uploadId: data.uploadId,
+        status: 'failed',
+        etags: data.etags || [],
+        error: data.error || null,
+    });
+});
 if (Platform.OS === 'android') {
     AppRegistry.registerHeadlessTask('RNMultipartUploadKeepAlive', function () { return function () { return new Promise(function () { }); }; });
+    AppRegistry.registerHeadlessTask('RNMultipartUploadCompletion', function () { return function (data) { return runMultipartCompletion(data); }; });
 }
 export var UploadState = {
     Cancelled: 'cancelled',
@@ -196,6 +251,17 @@ var Upload = /** @class */ (function () {
         return MultipartS3Upload.resume(uploadId);
     };
     /**
+     * Registers the function that finishes a multipart upload (for example by
+     * sending CompleteMultipartUpload) once every part has been uploaded. It is
+     * called when the app is running and, on Android, from a headless task when
+     * the upload finished while the app was not running. Register it at the top
+     * level of your entry file so it exists when the app is started in the
+     * background. The upload is acknowledged when the handler resolves.
+     */
+    Upload.setMultipartCompletionHandler = function (handler) {
+        multipartCompletionHandler = handler;
+    };
+    /**
      * Lists multipart uploads known to the native side, including ones that
      * finished while the app was suspended or relaunched in the background.
      */
@@ -237,7 +303,7 @@ var Upload = /** @class */ (function () {
      */
     Upload.prototype.start = function () {
         return __awaiter(this, void 0, void 0, function () {
-            var nativeUploads, existingUpload, _a, error_1;
+            var nativeUploads, existingUpload, _a, error_2;
             var _this = this;
             return __generator(this, function (_b) {
                 switch (_b.label) {
@@ -280,12 +346,12 @@ var Upload = /** @class */ (function () {
                         UploadRegistry.register(this);
                         return [3 /*break*/, 6];
                     case 5:
-                        error_1 = _b.sent();
+                        error_2 = _b.sent();
                         this.cleanup();
                         if (this.rejectStart) {
-                            this.rejectStart(error_1);
+                            this.rejectStart(error_2);
                         }
-                        throw error_1;
+                        throw error_2;
                     case 6: return [2 /*return*/, this.startPromise];
                 }
             });
@@ -376,7 +442,7 @@ var Upload = /** @class */ (function () {
      */
     Upload.prototype.cancel = function () {
         return __awaiter(this, void 0, void 0, function () {
-            var result, error_2;
+            var result, error_3;
             return __generator(this, function (_a) {
                 switch (_a.label) {
                     case 0:
@@ -392,9 +458,9 @@ var Upload = /** @class */ (function () {
                         // Don't cleanup here - let the cancelled event handle it
                         return [2 /*return*/, result];
                     case 3:
-                        error_2 = _a.sent();
+                        error_3 = _a.sent();
                         this.cleanup();
-                        throw error_2;
+                        throw error_3;
                     case 4: return [2 /*return*/];
                 }
             });
@@ -597,6 +663,7 @@ export var pauseMultipartS3 = function (uploadId) {
 export var resumeMultipartS3 = function (uploadId) {
     return Upload.resumeMultipartS3(uploadId);
 };
+export var setMultipartCompletionHandler = function (handler) { return Upload.setMultipartCompletionHandler(handler); };
 export var getMultipartS3Uploads = function () {
     return Upload.getMultipartS3Uploads();
 };

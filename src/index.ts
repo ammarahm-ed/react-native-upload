@@ -203,6 +203,17 @@ export interface MultipartPendingUpload {
   error: string | null;
 }
 
+export interface MultipartCompletionEvent {
+  uploadId: string;
+  status: "completed" | "failed";
+  etags: string[];
+  error: string | null;
+}
+
+export type MultipartCompletionHandler = (
+  event: MultipartCompletionEvent,
+) => Promise<void> | void;
+
 export interface MultipartS3Result {
   uploadId: string;
   success: boolean;
@@ -224,10 +235,61 @@ if (NativeModules.RNFileUploader && NativeModule.addListener) {
   NativeModule.addListener(eventPrefix + 'multipart-completed');
 }
 
+let multipartCompletionHandler: MultipartCompletionHandler | null = null;
+const runningCompletions = new Map<string, Promise<void>>();
+
+const runMultipartCompletion = (event: MultipartCompletionEvent): Promise<void> => {
+  const running = runningCompletions.get(event.uploadId);
+  if (running) {
+    return running;
+  }
+  const handler = multipartCompletionHandler;
+  if (!handler) {
+    return Promise.resolve();
+  }
+  const run = (async () => {
+    try {
+      await handler(event);
+      await NativeModule.acknowledgeMultipartUpload(event.uploadId);
+    } catch (error) {
+      console.warn(
+        `Multipart completion handler failed for ${event.uploadId}`,
+        error,
+      );
+    } finally {
+      runningCompletions.delete(event.uploadId);
+    }
+  })();
+  runningCompletions.set(event.uploadId, run);
+  return run;
+};
+
+DeviceEventEmitter.addListener(eventPrefix + 'multipart-completed', (data: any) => {
+  runMultipartCompletion({
+    uploadId: data.uploadId,
+    status: 'completed',
+    etags: data.etags || [],
+    error: null,
+  });
+});
+
+DeviceEventEmitter.addListener(eventPrefix + 'multipart-error', (data: any) => {
+  runMultipartCompletion({
+    uploadId: data.uploadId,
+    status: 'failed',
+    etags: data.etags || [],
+    error: data.error || null,
+  });
+});
+
 if (Platform.OS === 'android') {
   AppRegistry.registerHeadlessTask(
     'RNMultipartUploadKeepAlive',
     () => () => new Promise<void>(() => {}),
+  );
+  AppRegistry.registerHeadlessTask(
+    'RNMultipartUploadCompletion',
+    () => (data: MultipartCompletionEvent) => runMultipartCompletion(data),
   );
 }
 
@@ -404,6 +466,20 @@ class Upload {
    */
   static resumeMultipartS3(uploadId: string): Promise<boolean> {
     return MultipartS3Upload.resume(uploadId);
+  }
+
+  /**
+   * Registers the function that finishes a multipart upload (for example by
+   * sending CompleteMultipartUpload) once every part has been uploaded. It is
+   * called when the app is running and, on Android, from a headless task when
+   * the upload finished while the app was not running. Register it at the top
+   * level of your entry file so it exists when the app is started in the
+   * background. The upload is acknowledged when the handler resolves.
+   */
+  static setMultipartCompletionHandler(
+    handler: MultipartCompletionHandler | null,
+  ): void {
+    multipartCompletionHandler = handler;
   }
 
   /**
@@ -812,6 +888,10 @@ export const pauseMultipartS3 = (uploadId: string): Promise<boolean> =>
 
 export const resumeMultipartS3 = (uploadId: string): Promise<boolean> =>
   Upload.resumeMultipartS3(uploadId);
+
+export const setMultipartCompletionHandler = (
+  handler: MultipartCompletionHandler | null,
+): void => Upload.setMultipartCompletionHandler(handler);
 
 export const getMultipartS3Uploads = (): Promise<MultipartPendingUpload[]> =>
   Upload.getMultipartS3Uploads();

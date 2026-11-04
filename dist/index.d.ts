@@ -173,6 +173,13 @@ export interface MultipartPendingUpload {
     etags: string[];
     error: string | null;
 }
+export interface MultipartCompletionEvent {
+    uploadId: string;
+    status: "completed" | "failed";
+    etags: string[];
+    error: string | null;
+}
+export type MultipartCompletionHandler = (event: MultipartCompletionEvent) => Promise<void> | void;
 export interface MultipartS3Result {
     uploadId: string;
     success: boolean;
@@ -246,6 +253,15 @@ declare class Upload {
      * Resume a paused S3 multipart upload
      */
     static resumeMultipartS3(uploadId: string): Promise<boolean>;
+    /**
+     * Registers the function that finishes a multipart upload (for example by
+     * sending CompleteMultipartUpload) once every part has been uploaded. It is
+     * called when the app is running and, on Android, from a headless task when
+     * the upload finished while the app was not running. Register it at the top
+     * level of your entry file so it exists when the app is started in the
+     * background. The upload is acknowledged when the handler resolves.
+     */
+    static setMultipartCompletionHandler(handler: MultipartCompletionHandler | null): void;
     /**
      * Lists multipart uploads known to the native side, including ones that
      * finished while the app was suspended or relaunched in the background.
@@ -323,6 +339,7 @@ export declare const startMultipartS3: (options: MultipartS3Options) => Promise<
 export declare const cancelMultipartS3: (uploadId: string) => Promise<boolean>;
 export declare const pauseMultipartS3: (uploadId: string) => Promise<boolean>;
 export declare const resumeMultipartS3: (uploadId: string) => Promise<boolean>;
+export declare const setMultipartCompletionHandler: (handler: MultipartCompletionHandler | null) => void;
 export declare const getMultipartS3Uploads: () => Promise<MultipartPendingUpload[]>;
 export declare const acknowledgeMultipartS3: (uploadId: string) => Promise<boolean>;
 export declare const addMultipartListener: (eventType: MultipartEventType, uploadId: string, listener: (data: any) => void) => EmitterSubscription;

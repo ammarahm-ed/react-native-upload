@@ -2,20 +2,41 @@ package com.appfolio.uploader
 
 import android.content.Context
 import android.util.Log
-import com.facebook.react.bridge.*
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.bridge.ReadableMap
+import com.facebook.react.bridge.ReadableType
+import com.facebook.react.bridge.UiThreadUtil
+import com.facebook.react.bridge.WritableArray
+import com.facebook.react.bridge.WritableMap
 import com.facebook.react.jstasks.HeadlessJsTaskConfig
 import com.facebook.react.jstasks.HeadlessJsTaskContext
 import com.facebook.react.modules.core.DeviceEventManagerModule.RCTDeviceEventEmitter
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import okhttp3.Call
+import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
-import okhttp3.MediaType
 import okhttp3.Request
 import okhttp3.RequestBody
 import okio.BufferedSink
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
@@ -26,13 +47,125 @@ import java.util.concurrent.atomic.AtomicLong
 
 class UploadAlreadyExistsException(message: String) : Exception(message)
 
-class MultipartUploader(private val reactContext: ReactApplicationContext) {
+data class UploadParams(
+    val uploadId: String,
+    val path: String,
+    val parts: List<String>,
+    val maxParallel: Int,
+    val notificationEnabled: Boolean,
+    val title: String,
+    val startMessage: String,
+    val resumeMessage: String,
+    val progressMessage: String,
+    val channelName: String,
+    val existingEtags: List<String>
+) {
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("uploadId", uploadId)
+        put("path", path)
+        put("parts", JSONArray(parts))
+        put("maxParallel", maxParallel)
+        put("notificationEnabled", notificationEnabled)
+        put("title", title)
+        put("startMessage", startMessage)
+        put("resumeMessage", resumeMessage)
+        put("progressMessage", progressMessage)
+        put("channelName", channelName)
+    }
+
+    companion object {
+        fun fromJson(json: JSONObject, existingEtags: List<String>): UploadParams {
+            val partsJson = json.getJSONArray("parts")
+            return UploadParams(
+                uploadId = json.getString("uploadId"),
+                path = json.getString("path"),
+                parts = List(partsJson.length()) { partsJson.getString(it) },
+                maxParallel = json.getInt("maxParallel"),
+                notificationEnabled = json.getBoolean("notificationEnabled"),
+                title = json.getString("title"),
+                startMessage = json.getString("startMessage"),
+                resumeMessage = json.getString("resumeMessage"),
+                progressMessage = json.getString("progressMessage"),
+                channelName = json.getString("channelName"),
+                existingEtags = existingEtags
+            )
+        }
+
+        fun fromReadableMap(options: ReadableMap): UploadParams {
+            val uploadId = options.getString("uploadId")
+                ?: throw IllegalArgumentException("uploadId is required")
+            val rawPath = options.getString("path")
+                ?: throw IllegalArgumentException("path is required")
+            val path = if (rawPath.startsWith("file://")) rawPath.substring(7) else rawPath
+
+            val partsArray = options.getArray("parts")
+                ?: throw IllegalArgumentException("parts is required")
+            if (partsArray.size() == 0) {
+                throw IllegalArgumentException("parts array cannot be empty")
+            }
+            val parts = List(partsArray.size()) { i -> partsArray.getString(i)!! }
+
+            val maxParallel = if (options.hasKey("maxParallel") && options.getType("maxParallel") == ReadableType.Number) {
+                options.getInt("maxParallel")
+            } else {
+                3
+            }
+
+            val notification = if (options.hasKey("notification") && options.getType("notification") == ReadableType.Map) {
+                options.getMap("notification")
+            } else null
+
+            fun text(key: String, default: String): String =
+                if (notification != null && notification.hasKey(key) && notification.getType(key) == ReadableType.String) {
+                    notification.getString(key) ?: default
+                } else default
+
+            val enabled = notification?.hasKey("enabled") == true && notification.getBoolean("enabled")
+            val filename = text("filename", File(path).name)
+
+            val existing = if (options.hasKey("existingEtags") && options.getType("existingEtags") == ReadableType.Array) {
+                val array = options.getArray("existingEtags")!!
+                List(array.size()) { i -> array.getString(i) ?: "" }
+            } else emptyList()
+
+            return UploadParams(
+                uploadId = uploadId,
+                path = path,
+                parts = parts,
+                maxParallel = maxParallel,
+                notificationEnabled = enabled,
+                title = text("onProgressTitle", filename),
+                startMessage = text("onStartMessage", "Starting upload..."),
+                resumeMessage = text("onResumeMessage", "Resuming upload..."),
+                progressMessage = text("onProgressMessage", "Uploading... {progress}%"),
+                channelName = text("notificationChannelName", "Background Upload Channel"),
+                existingEtags = existing
+            )
+        }
+    }
+}
+
+class MultipartUploader private constructor(private val appContext: Context) {
     companion object {
         private const val TAG = "MultipartUploader"
-        private const val MIN_CHUNK_SIZE = 5L * 1024 * 1024 // 5MB minimum for S3
+        private const val MIN_CHUNK_SIZE = 5L * 1024 * 1024
         private const val MAX_RETRIES = 3
         private const val ACK_GRACE_MS = 30_000L
+        private const val HEADLESS_ACK_GRACE_MS = 120_000L
         private const val KEEP_ALIVE_TASK = "RNMultipartUploadKeepAlive"
+        private const val STATE_FILE = "rn-multipart-uploads.json"
+
+        const val STATUS_RUNNING = "running"
+        const val STATUS_COMPLETED = "completed"
+        const val STATUS_FAILED = "failed"
+
+        @Volatile
+        private var instance: MultipartUploader? = null
+
+        fun getInstance(context: Context): MultipartUploader =
+            instance ?: synchronized(this) {
+                instance ?: MultipartUploader(context.applicationContext).also { instance = it }
+            }
     }
 
     private class HttpStatusException(val code: Int, message: String) : Exception(message) {
@@ -70,17 +203,6 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
         }
     }
 
-    private class NotificationTexts(private val map: ReadableMap?, filename: String) {
-        private fun string(key: String, default: String): String =
-            if (map != null && map.hasKey(key) && map.getType(key) == ReadableType.String) map.getString(key) ?: default else default
-
-        val title = string("onProgressTitle", filename)
-        val startMessage = string("onStartMessage", "Starting upload...")
-        val resumeMessage = string("onResumeMessage", "Resuming upload...")
-        val progressMessage = string("onProgressMessage", "Uploading... {progress}%")
-        val channelName = string("notificationChannelName", "Background Upload Channel")
-    }
-
     private data class PartInfo(
         val partNumber: Int,
         val url: String,
@@ -88,67 +210,64 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
         val size: Long
     )
 
-    private data class UploadJob(
+    private class Record(
+        val params: UploadParams,
+        val totalBytes: Long,
+        val chunkSize: Long,
+        @Volatile var etags: Array<String>,
+        @Volatile var status: String,
+        @Volatile var error: String?
+    ) {
+        fun sizeOf(index: Int): Long {
+            val offset = index * chunkSize
+            return if (index == params.parts.size - 1) totalBytes - offset else chunkSize
+        }
+
+        fun bytesUploaded(): Long {
+            var bytes = 0L
+            for (i in etags.indices) {
+                if (etags[i].isNotEmpty()) bytes += sizeOf(i)
+            }
+            return bytes
+        }
+    }
+
+    private class UploadJob(
         val uploadId: String,
-        val job: CompletableJob = Job(),
-        val isPaused: AtomicBoolean = AtomicBoolean(false),
         val totalBytes: Long,
         val partsCount: Int,
         val bytesUploaded: AtomicLong,
         val completedChunks: AtomicLong,
         val partETags: ConcurrentHashMap<Int, String>,
+        val isPaused: AtomicBoolean = AtomicBoolean(false),
         val activeCalls: ConcurrentHashMap<Int, Call> = ConcurrentHashMap()
-    )
+    ) {
+        @Volatile
+        var job: Job? = null
 
+        @Volatile
+        var cancelledByUser = false
+
+        fun cancel() {
+            activeCalls.values.forEach { call ->
+                try { call.cancel() } catch (_: Exception) {}
+            }
+            job?.cancel()
+        }
+    }
+
+    private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val ackScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val records = ConcurrentHashMap<String, Record>()
     private val activeUploads = ConcurrentHashMap<String, UploadJob>()
     private val awaitingAck = ConcurrentHashMap<String, Job>()
-    private val ackScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val stateLock = Any()
+    private var restored = false
 
+    @Volatile
+    private var reactContext: ReactApplicationContext? = null
     private val keepAliveLock = Any()
     private var keepAliveTaskId: Int? = null
-
-    private fun acquireJsKeepAlive() {
-        UiThreadUtil.runOnUiThread {
-            synchronized(keepAliveLock) {
-                if (keepAliveTaskId != null || !reactContext.hasActiveReactInstance()) return@runOnUiThread
-                val config = HeadlessJsTaskConfig(KEEP_ALIVE_TASK, Arguments.createMap(), 0, true)
-                keepAliveTaskId = HeadlessJsTaskContext.getInstance(reactContext).startTask(config)
-            }
-        }
-    }
-
-    private fun releaseJsKeepAlive() {
-        UiThreadUtil.runOnUiThread {
-            synchronized(keepAliveLock) {
-                val taskId = keepAliveTaskId ?: return@runOnUiThread
-                keepAliveTaskId = null
-                HeadlessJsTaskContext.getInstance(reactContext).finishTask(taskId)
-            }
-        }
-    }
-
-    private fun stopServiceIfIdle() {
-        if (activeUploads.isEmpty() && awaitingAck.isEmpty()) {
-            releaseJsKeepAlive()
-            reactContext.applicationContext?.let { MultipartUploadService.stop(it) }
-        }
-    }
-
-    private fun holdServiceUntilAcknowledged(uploadId: String) {
-        awaitingAck.remove(uploadId)?.cancel()
-        awaitingAck[uploadId] = ackScope.launch {
-            delay(ACK_GRACE_MS)
-            awaitingAck.remove(uploadId)
-            stopServiceIfIdle()
-        }
-    }
-
-    fun acknowledgeUpload(uploadId: String): Boolean {
-        val timer = awaitingAck.remove(uploadId) ?: return false
-        timer.cancel()
-        stopServiceIfIdle()
-        return true
-    }
 
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(60, TimeUnit.SECONDS)
@@ -157,63 +276,225 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
         .retryOnConnectionFailure(true)
         .build()
 
+    fun attachReactContext(context: ReactApplicationContext) {
+        reactContext = context
+        restore()
+        engineScope.launch { resumeInterrupted() }
+        if (activeUploads.isNotEmpty() || awaitingAck.isNotEmpty()) {
+            acquireJsKeepAlive()
+        }
+    }
+
+    fun detachReactContext(context: ReactApplicationContext) {
+        synchronized(keepAliveLock) {
+            keepAliveTaskId = null
+        }
+        if (reactContext === context) {
+            reactContext = null
+        }
+    }
+
+    private fun isJsAlive(): Boolean = reactContext?.hasActiveReactInstance() == true
+
     private fun emitEvent(eventName: String, params: WritableMap) {
+        val context = reactContext ?: return
+        if (!context.hasActiveReactInstance()) return
         try {
-            reactContext.getJSModule(RCTDeviceEventEmitter::class.java)?.emit(eventName, params)
+            context.getJSModule(RCTDeviceEventEmitter::class.java)?.emit(eventName, params)
         } catch (e: Exception) {
             Log.e(TAG, "Error emitting event $eventName: ${e.message}")
         }
     }
 
-    private fun cleanFilePath(path: String): String {
-        return if (path.startsWith("file://")) {
-            path.substring(7)
-        } else {
-            path
+    private fun acquireJsKeepAlive() {
+        UiThreadUtil.runOnUiThread {
+            synchronized(keepAliveLock) {
+                val context = reactContext
+                if (keepAliveTaskId != null || context == null || !context.hasActiveReactInstance()) return@runOnUiThread
+                val config = HeadlessJsTaskConfig(KEEP_ALIVE_TASK, Arguments.createMap(), 0, true)
+                keepAliveTaskId = HeadlessJsTaskContext.getInstance(context).startTask(config)
+            }
         }
     }
 
-    suspend fun startMultipartUpload(options: ReadableMap): WritableMap = withContext(Dispatchers.IO) {
-        val uploadId = options.getString("uploadId")
-            ?: throw IllegalArgumentException("uploadId is required")
-        val rawPath = options.getString("path")
-            ?: throw IllegalArgumentException("path is required")
-        val filePath = cleanFilePath(rawPath)
+    private fun releaseJsKeepAlive() {
+        UiThreadUtil.runOnUiThread {
+            synchronized(keepAliveLock) {
+                val context = reactContext
+                val taskId = keepAliveTaskId ?: return@runOnUiThread
+                keepAliveTaskId = null
+                if (context != null && context.hasActiveReactInstance()) {
+                    HeadlessJsTaskContext.getInstance(context).finishTask(taskId)
+                }
+            }
+        }
+    }
 
-        val file = File(filePath)
+    private fun stopServiceIfIdle() {
+        if (activeUploads.isEmpty() && awaitingAck.isEmpty()) {
+            releaseJsKeepAlive()
+            MultipartUploadService.stop(appContext)
+        }
+    }
+
+    private fun holdServiceUntilAcknowledged(uploadId: String, graceMs: Long) {
+        awaitingAck.remove(uploadId)?.cancel()
+        awaitingAck[uploadId] = ackScope.launch {
+            delay(graceMs)
+            awaitingAck.remove(uploadId)
+            stopServiceIfIdle()
+        }
+    }
+
+    fun acknowledgeUpload(uploadId: String): Boolean {
+        var acknowledged = false
+        val record = records[uploadId]
+        if (record != null && record.status != STATUS_RUNNING) {
+            records.remove(uploadId)
+            persist()
+            acknowledged = true
+        }
+        val timer = awaitingAck.remove(uploadId)
+        if (timer != null) {
+            timer.cancel()
+            acknowledged = true
+        }
+        stopServiceIfIdle()
+        return acknowledged
+    }
+
+    fun pendingUploads(): WritableArray {
+        restore()
+        val list = Arguments.createArray()
+        records.values.forEach { record ->
+            val bytes = record.bytesUploaded()
+            val map = Arguments.createMap()
+            map.putString("uploadId", record.params.uploadId)
+            map.putString("status", record.status)
+            map.putDouble("progress", if (record.totalBytes > 0) bytes.toDouble() / record.totalBytes.toDouble() else 1.0)
+            map.putDouble("bytesUploaded", bytes.toDouble())
+            map.putDouble("totalBytes", record.totalBytes.toDouble())
+            map.putArray("etags", etagsArray(record.etags.toList()))
+            if (record.error != null) map.putString("error", record.error) else map.putNull("error")
+            list.pushMap(map)
+        }
+        return list
+    }
+
+    fun completionPayload(uploadId: String): WritableMap? {
+        val record = records[uploadId] ?: return null
+        val map = Arguments.createMap()
+        map.putString("uploadId", uploadId)
+        map.putString("status", record.status)
+        map.putArray("etags", etagsArray(record.etags.toList()))
+        if (record.error != null) map.putString("error", record.error) else map.putNull("error")
+        return map
+    }
+
+    private fun etagsArray(etags: List<String>): WritableArray {
+        val array = Arguments.createArray()
+        etags.forEach { array.pushString(it) }
+        return array
+    }
+
+    private fun persist() {
+        synchronized(stateLock) {
+            try {
+                val array = JSONArray()
+                records.values.forEach { record ->
+                    array.put(JSONObject().apply {
+                        put("params", record.params.toJson())
+                        put("totalBytes", record.totalBytes)
+                        put("chunkSize", record.chunkSize)
+                        put("etags", JSONArray(record.etags.toList()))
+                        put("status", record.status)
+                        put("error", record.error ?: JSONObject.NULL)
+                    })
+                }
+                val target = File(appContext.filesDir, STATE_FILE)
+                val temp = File(appContext.filesDir, "$STATE_FILE.tmp")
+                temp.writeText(array.toString())
+                if (!temp.renameTo(target)) {
+                    target.writeText(array.toString())
+                    temp.delete()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to persist upload state: ${e.message}")
+            }
+        }
+    }
+
+    private fun restore() {
+        synchronized(stateLock) {
+            if (restored) return
+            restored = true
+            try {
+                val file = File(appContext.filesDir, STATE_FILE)
+                if (!file.exists()) return
+                val array = JSONArray(file.readText())
+                for (i in 0 until array.length()) {
+                    val json = array.getJSONObject(i)
+                    val etagsJson = json.getJSONArray("etags")
+                    val etags = Array(etagsJson.length()) { etagsJson.getString(it) }
+                    val params = UploadParams.fromJson(json.getJSONObject("params"), emptyList())
+                    val error = if (json.isNull("error")) null else json.getString("error")
+                    records[params.uploadId] = Record(
+                        params,
+                        json.getLong("totalBytes"),
+                        json.getLong("chunkSize"),
+                        etags,
+                        json.getString("status"),
+                        error
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to restore upload state: ${e.message}")
+            }
+        }
+    }
+
+    fun resumeInterrupted(): List<UploadParams> {
+        restore()
+        val resumed = mutableListOf<UploadParams>()
+        for (record in records.values.toList()) {
+            if (record.status == STATUS_RUNNING && !activeUploads.containsKey(record.params.uploadId)) {
+                val params = record.params.copy(existingEtags = record.etags.toList())
+                try {
+                    launchUpload(params, null)
+                    resumed.add(params)
+                } catch (e: UploadAlreadyExistsException) {
+                    continue
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not resume ${params.uploadId}: ${e.message}")
+                    record.status = STATUS_FAILED
+                    record.error = e.message
+                    persist()
+                    notifyFinished(record)
+                }
+            }
+        }
+        return resumed
+    }
+
+    suspend fun startMultipartUpload(params: UploadParams): WritableMap {
+        val deferred = CompletableDeferred<WritableMap>()
+        withContext(Dispatchers.IO) { launchUpload(params, deferred) }
+        return deferred.await()
+    }
+
+    private fun launchUpload(params: UploadParams, deferred: CompletableDeferred<WritableMap>?) {
+        restore()
+        val file = File(params.path)
         if (!file.exists() || !file.isFile) {
-            throw IllegalArgumentException("File does not exist at path: $filePath")
+            throw IllegalArgumentException("File does not exist at path: ${params.path}")
         }
 
-        val partsArray = options.getArray("parts")
-            ?: throw IllegalArgumentException("parts is required")
-        val partsCount = partsArray.size()
-        if (partsCount == 0) {
-            throw IllegalArgumentException("parts array cannot be empty")
-        }
-
-        val uploadUrls = Array(partsCount) { i -> partsArray.getString(i)!! }
-        val maxParallel = if (options.hasKey("maxParallel") && options.getType("maxParallel") == ReadableType.Number) {
-            options.getInt("maxParallel")
-        } else {
-            3
-        }
-
-        val notificationMap = if (options.hasKey("notification") && options.getType("notification") == ReadableType.Map) {
-            options.getMap("notification")
-        } else null
-
-        val showNotification = notificationMap?.hasKey("enabled") == true && notificationMap.getBoolean("enabled")
-        val filename = notificationMap?.getString("filename") ?: file.name
-        val texts = NotificationTexts(notificationMap, filename)
-
+        val partsCount = params.parts.size
         val fileSize = file.length()
         if (fileSize <= 0) {
-            throw IllegalArgumentException("File is empty or invalid: $filePath")
+            throw IllegalArgumentException("File is empty or invalid: ${params.path}")
         }
 
-        // S3 multipart requires all parts except the last to be >= 5MB (MIN_CHUNK_SIZE).
-        // If fileSize <= (partsCount - 1) * MIN_CHUNK_SIZE, partsCount is invalid for this file size.
         val minRequiredSize = MIN_CHUNK_SIZE * (partsCount - 1)
         if (partsCount > 1 && fileSize <= minRequiredSize) {
             throw IllegalArgumentException(
@@ -221,155 +502,170 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
             )
         }
 
-        val calculatedChunkSize = Math.ceil(fileSize.toDouble() / partsCount).toLong()
-        val chunkSize = Math.max(calculatedChunkSize, MIN_CHUNK_SIZE)
+        val chunkSize = Math.max(Math.ceil(fileSize.toDouble() / partsCount).toLong(), MIN_CHUNK_SIZE)
 
-        val existingEtagsArray = if (options.hasKey("existingEtags") && options.getType("existingEtags") == ReadableType.Array) {
-            options.getArray("existingEtags")
-        } else null
-
-        val initialETags = ConcurrentHashMap<Int, String>()
+        val initialEtags = ConcurrentHashMap<Int, String>()
+        val etagArray = Array(partsCount) { "" }
         var initialUploadedBytes = 0L
         var initialCompleted = 0L
-
-        if (existingEtagsArray != null) {
-            val count = Math.min(existingEtagsArray.size(), partsCount)
-            for (i in 0 until count) {
-                val etag = existingEtagsArray.getString(i)
-                if (!etag.isNullOrEmpty()) {
-                    val partNumber = i + 1
-                    val offset = i * chunkSize
-                    val size = if (i == partsCount - 1) fileSize - offset else chunkSize
-                    initialETags[partNumber] = etag
-                    initialUploadedBytes += size
-                    initialCompleted++
-                }
+        val count = Math.min(params.existingEtags.size, partsCount)
+        for (i in 0 until count) {
+            val etag = params.existingEtags[i]
+            if (etag.isNotEmpty()) {
+                val size = if (i == partsCount - 1) fileSize - i * chunkSize else chunkSize
+                initialEtags[i + 1] = etag
+                etagArray[i] = etag
+                initialUploadedBytes += size
+                initialCompleted++
             }
         }
 
-        val parentJob = coroutineContext[Job] ?: Job()
         val uploadJob = UploadJob(
-            uploadId = uploadId,
-            job = Job(parentJob),
+            uploadId = params.uploadId,
             totalBytes = fileSize,
             partsCount = partsCount,
             bytesUploaded = AtomicLong(initialUploadedBytes),
             completedChunks = AtomicLong(initialCompleted),
-            partETags = initialETags
+            partETags = initialEtags
         )
-        if (activeUploads.putIfAbsent(uploadId, uploadJob) != null) {
-            uploadJob.job.cancel()
-            throw UploadAlreadyExistsException("Upload already in progress for $uploadId")
+        if (activeUploads.putIfAbsent(params.uploadId, uploadJob) != null) {
+            throw UploadAlreadyExistsException("Upload already in progress for ${params.uploadId}")
         }
-        awaitingAck.remove(uploadId)?.cancel()
-        acquireJsKeepAlive()
+        awaitingAck.remove(params.uploadId)?.cancel()
 
-        val context: Context? = reactContext.applicationContext
-        if (context != null && showNotification) {
-            val startMsg = if (initialUploadedBytes > 0) texts.resumeMessage else texts.startMessage
-            MultipartUploadService.start(context, texts.title, startMsg, texts.channelName)
+        val record = Record(params, fileSize, chunkSize, etagArray, STATUS_RUNNING, null)
+        records[params.uploadId] = record
+        persist()
+
+        acquireJsKeepAlive()
+        if (params.notificationEnabled) {
+            val startMsg = if (initialUploadedBytes > 0) params.resumeMessage else params.startMessage
+            MultipartUploadService.start(appContext, params.title, startMsg, params.channelName)
         }
 
         if (initialUploadedBytes > 0) {
-            val progress = if (fileSize > 0) {
-                initialUploadedBytes.toDouble() / fileSize.toDouble()
-            } else 1.0
-            val progressParams = Arguments.createMap()
-            progressParams.putString("uploadId", uploadId)
-            progressParams.putDouble("progress", progress)
-            progressParams.putDouble("bytesUploaded", initialUploadedBytes.toDouble())
-            progressParams.putDouble("totalBytes", fileSize.toDouble())
-            progressParams.putInt("chunkIndex", (initialCompleted - 1).toInt())
-            val currentEtags = Arguments.createArray()
-            for (i in 0 until partsCount) {
-                val pNum = i + 1
-                currentEtags.pushString(initialETags[pNum] ?: "")
-            }
-            progressParams.putArray("etags", currentEtags)
-            emitEvent("RNFileUploader-multipart-progress", progressParams)
+            emitEvent("RNFileUploader-multipart-progress", progressMap(uploadJob, (initialCompleted - 1).toInt(), null))
         }
 
-        try {
-            withContext(uploadJob.job) {
-                val parts = uploadUrls.mapIndexed { index, url ->
-                    val partNumber = index + 1
-                    val offset = index * chunkSize
-                    val size = if (index == partsCount - 1) {
-                        fileSize - offset
-                    } else {
-                        chunkSize
-                    }
-                    if (size <= 0) {
-                        throw IllegalArgumentException(
-                            "Part $partNumber has invalid size ($size bytes). Offset: $offset, FileSize: $fileSize"
-                        )
-                    }
-                    PartInfo(partNumber, url, offset, size)
-                }
+        val parts = params.parts.mapIndexed { index, url ->
+            val offset = index * chunkSize
+            val size = if (index == partsCount - 1) fileSize - offset else chunkSize
+            if (size <= 0) {
+                activeUploads.remove(params.uploadId, uploadJob)
+                records.remove(params.uploadId)
+                persist()
+                throw IllegalArgumentException(
+                    "Part ${index + 1} has invalid size ($size bytes). Offset: $offset, FileSize: $fileSize"
+                )
+            }
+            PartInfo(index + 1, url, offset, size)
+        }
 
-                val semaphore = Semaphore(maxParallel)
-                val chunkJobs = parts.map { part ->
-                    async {
-                        semaphore.withPermit {
-                            uploadPart(file, part, uploadJob, texts, showNotification)
+        val job = engineScope.launch(start = CoroutineStart.LAZY) {
+            try {
+                coroutineScope {
+                    val semaphore = Semaphore(params.maxParallel)
+                    parts.map { part ->
+                        async {
+                            semaphore.withPermit {
+                                uploadPart(file, part, uploadJob, record)
+                            }
                         }
-                    }
+                    }.awaitAll()
                 }
-
-                chunkJobs.awaitAll()
 
                 if (uploadJob.completedChunks.get() < partsCount) {
                     throw Exception("Upload incomplete: completed ${uploadJob.completedChunks.get()} of $partsCount chunks")
                 }
 
-                val sortedETags = uploadJob.partETags.toSortedMap().values.toList()
+                record.status = STATUS_COMPLETED
+                record.error = null
+                persist()
 
-                // Emit completion event
-                val completionParams = Arguments.createMap()
-                completionParams.putString("uploadId", uploadId)
-                completionParams.putBoolean("success", true)
-                val completionEtags = Arguments.createArray()
-                sortedETags.forEach { completionEtags.pushString(it) }
-                completionParams.putArray("etags", completionEtags)
-                emitEvent("RNFileUploader-multipart-completed", completionParams)
-
-                val resultMap = Arguments.createMap()
-                resultMap.putString("uploadId", uploadId)
-                resultMap.putBoolean("success", true)
-                val resultEtags = Arguments.createArray()
-                sortedETags.forEach { resultEtags.pushString(it) }
-                resultMap.putArray("etags", resultEtags)
-                resultMap
+                val result = Arguments.createMap()
+                result.putString("uploadId", params.uploadId)
+                result.putBoolean("success", true)
+                result.putArray("etags", etagsArray(record.etags.toList()))
+                deferred?.complete(result)
+                notifyFinished(record)
+            } catch (e: CancellationException) {
+                if (uploadJob.cancelledByUser) {
+                    records.remove(params.uploadId)
+                    persist()
+                    val cancelParams = Arguments.createMap()
+                    cancelParams.putString("uploadId", params.uploadId)
+                    cancelParams.putString("error", "Upload cancelled")
+                    emitEvent("RNFileUploader-multipart-cancelled", cancelParams)
+                } else {
+                    record.status = STATUS_FAILED
+                    record.error = e.message ?: "Upload cancelled"
+                    persist()
+                    notifyFinished(record)
+                }
+                deferred?.completeExceptionally(e)
+            } catch (e: Exception) {
+                Log.e(TAG, "Multipart upload failed for ${params.uploadId}: ${e.message}", e)
+                record.status = STATUS_FAILED
+                record.error = e.message ?: "Upload failed"
+                persist()
+                notifyFinished(record)
+                deferred?.completeExceptionally(e)
+            } finally {
+                activeUploads.remove(params.uploadId, uploadJob)
+                if (!uploadJob.cancelledByUser) {
+                    holdServiceUntilAcknowledged(
+                        params.uploadId,
+                        if (isJsAlive()) ACK_GRACE_MS else HEADLESS_ACK_GRACE_MS
+                    )
+                }
+                stopServiceIfIdle()
             }
-        } catch (e: CancellationException) {
-            val cancelParams = Arguments.createMap()
-            cancelParams.putString("uploadId", uploadId)
-            cancelParams.putString("error", "Upload cancelled")
-            emitEvent("RNFileUploader-multipart-cancelled", cancelParams)
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "Multipart upload failed for $uploadId: ${e.message}", e)
-            val errorParams = Arguments.createMap()
-            errorParams.putString("uploadId", uploadId)
-            errorParams.putString("error", e.message ?: "Upload failed")
-            emitEvent("RNFileUploader-multipart-error", errorParams)
-            throw e
-        } finally {
-            uploadJob.job.complete()
-            activeUploads.remove(uploadId, uploadJob)
-            if (showNotification) {
-                holdServiceUntilAcknowledged(uploadId)
-            }
-            stopServiceIfIdle()
         }
+        uploadJob.job = job
+        job.start()
+    }
+
+    private fun notifyFinished(record: Record) {
+        if (isJsAlive()) {
+            val params = Arguments.createMap()
+            params.putString("uploadId", record.params.uploadId)
+            params.putArray("etags", etagsArray(record.etags.toList()))
+            if (record.status == STATUS_COMPLETED) {
+                params.putBoolean("success", true)
+                emitEvent("RNFileUploader-multipart-completed", params)
+            } else {
+                params.putString("error", record.error ?: "Upload failed")
+                emitEvent("RNFileUploader-multipart-error", params)
+            }
+        } else {
+            MultipartCompletionService.start(appContext, record.params.uploadId)
+        }
+    }
+
+    private fun progressMap(uploadJob: UploadJob, chunkIndex: Int, etag: String?): WritableMap {
+        val progress = if (uploadJob.totalBytes > 0) {
+            uploadJob.bytesUploaded.get().toDouble() / uploadJob.totalBytes.toDouble()
+        } else 1.0
+        val map = Arguments.createMap()
+        map.putString("uploadId", uploadJob.uploadId)
+        map.putDouble("progress", progress)
+        map.putDouble("bytesUploaded", uploadJob.bytesUploaded.get().toDouble())
+        map.putDouble("totalBytes", uploadJob.totalBytes.toDouble())
+        map.putInt("chunkIndex", chunkIndex)
+        if (etag != null) map.putString("etag", etag)
+        val etags = Arguments.createArray()
+        for (i in 0 until uploadJob.partsCount) {
+            etags.pushString(uploadJob.partETags[i + 1] ?: "")
+        }
+        map.putArray("etags", etags)
+        return map
     }
 
     private suspend fun uploadPart(
         file: File,
         part: PartInfo,
         uploadJob: UploadJob,
-        texts: NotificationTexts,
-        showNotification: Boolean
+        record: Record
     ): Boolean = withContext(Dispatchers.IO) {
         if (uploadJob.partETags.containsKey(part.partNumber)) {
             return@withContext true
@@ -383,25 +679,20 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
                 delay(500)
             }
 
-            if (!isActive || uploadJob.job.isCancelled) {
+            if (!isActive) {
                 throw CancellationException("Upload cancelled")
             }
 
             try {
                 if (!file.exists()) {
-                    uploadJob.activeCalls.values.forEach { call ->
-                        try { call.cancel() } catch (_: Exception) {}
-                    }
-                    uploadJob.job.cancel()
+                    uploadJob.cancel()
                     throw CancellationException("Upload cancelled: file deleted")
                 }
 
                 val mediaType = "application/octet-stream".toMediaTypeOrNull()
-                val requestBody = FileRegionBody(file, part.offset, part.size, mediaType)
-
                 val request = Request.Builder()
                     .url(part.url)
-                    .put(requestBody)
+                    .put(FileRegionBody(file, part.offset, part.size, mediaType))
                     .build()
 
                 val call = httpClient.newCall(request)
@@ -431,32 +722,21 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
                         uploadJob.partETags[part.partNumber] = etag
                         uploadJob.completedChunks.incrementAndGet()
                         uploadJob.bytesUploaded.addAndGet(part.size)
+                        record.etags = Array(uploadJob.partsCount) { i -> uploadJob.partETags[i + 1] ?: "" }
+                        persist()
                     }
                 }
 
-                val progress = if (uploadJob.totalBytes > 0) {
-                    uploadJob.bytesUploaded.get().toDouble() / uploadJob.totalBytes.toDouble()
-                } else 1.0
+                emitEvent("RNFileUploader-multipart-progress", progressMap(uploadJob, part.partNumber - 1, etag))
 
-                val progressParams = Arguments.createMap()
-                progressParams.putString("uploadId", uploadJob.uploadId)
-                progressParams.putDouble("progress", progress)
-                progressParams.putDouble("bytesUploaded", uploadJob.bytesUploaded.get().toDouble())
-                progressParams.putDouble("totalBytes", uploadJob.totalBytes.toDouble())
-                progressParams.putInt("chunkIndex", part.partNumber - 1)
-                progressParams.putString("etag", etag)
-                val currentEtags = Arguments.createArray()
-                for (i in 0 until uploadJob.partsCount) {
-                    val pNum = i + 1
-                    currentEtags.pushString(uploadJob.partETags[pNum] ?: "")
-                }
-                progressParams.putArray("etags", currentEtags)
-                emitEvent("RNFileUploader-multipart-progress", progressParams)
-
-                val context: Context? = reactContext.applicationContext
-                if (context != null && showNotification) {
-                    val percent = (progress * 100).toInt()
-                    MultipartUploadService.updateProgress(context, texts.title, percent, texts.progressMessage.replace("{progress}", percent.toString()))
+                if (record.params.notificationEnabled) {
+                    val percent = (uploadJob.bytesUploaded.get().toDouble() / uploadJob.totalBytes.toDouble() * 100).toInt()
+                    MultipartUploadService.updateProgress(
+                        appContext,
+                        record.params.title,
+                        percent,
+                        record.params.progressMessage.replace("{progress}", percent.toString())
+                    )
                 }
 
                 return@withContext true
@@ -464,10 +744,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
                 throw e
             } catch (e: Exception) {
                 if (e is java.io.FileNotFoundException || !file.exists()) {
-                    uploadJob.activeCalls.values.forEach { call ->
-                        try { call.cancel() } catch (_: Exception) {}
-                    }
-                    uploadJob.job.cancel()
+                    uploadJob.cancel()
                     throw CancellationException("Upload cancelled: file deleted")
                 }
                 if (e is HttpStatusException && !e.isRetryable) {
@@ -485,14 +762,10 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
         throw lastError ?: Exception("Part ${part.partNumber} failed after $MAX_RETRIES retries")
     }
 
-    fun cancelUpload(uploadIdOrKey: String): Boolean {
-        val uploadJob = activeUploads[uploadIdOrKey] ?: return false
-        uploadJob.activeCalls.values.forEach { call ->
-            try {
-                call.cancel()
-            } catch (_: Exception) {}
-        }
-        uploadJob.job.cancel()
+    fun cancelUpload(uploadId: String): Boolean {
+        val uploadJob = activeUploads[uploadId] ?: return false
+        uploadJob.cancelledByUser = true
+        uploadJob.cancel()
         return true
     }
 
