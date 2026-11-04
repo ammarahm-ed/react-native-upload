@@ -1,6 +1,6 @@
 {
   "name": "@ammarahmed/react-native-upload",
-  "version": "6.33.0",
+  "version": "7.0.0-alpha.0",
   "description": "Cross platform http post file uploader with Android and iOS background support.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -40,12 +40,12 @@
     "@semantic-release/github": "^8.0.0",
     "@semantic-release/npm": "^9.0.0",
     "@semantic-release/release-notes-generator": "^10.0.0",
-    "react-native": "0.82.1",
     "eslint": "^6.8.0",
     "husky": "^4.2.3",
     "lint-staged": "^10.0.8",
+    "react-native": "0.82.1",
     "semantic-release": "^19.0.2",
-    "typescript": "5.9.3"
+    "typescript": "^5.9.3"
   },
   "release": {
     "plugins": [
