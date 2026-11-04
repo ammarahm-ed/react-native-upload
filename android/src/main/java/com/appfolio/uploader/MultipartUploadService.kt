@@ -173,6 +173,10 @@ class MultipartUploadService : Service() {
         }
     }
 
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        stopForegroundAndSelf()
+    }
+
     override fun onDestroy() {
         if (instance === this) {
             instance = null
