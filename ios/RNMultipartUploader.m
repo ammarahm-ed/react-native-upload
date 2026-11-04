@@ -348,10 +348,6 @@ static NSInteger const MAX_RETRIES = 3;
         double progress = self.totalBytes > 0 ? (double)self.bytesUploaded / (double)self.totalBytes : 1.0;
 
         if (self.eventEmitter) {
-            NSMutableArray<NSString *> *validEtags = [NSMutableArray array];
-            for (NSString *e in self.etags) {
-                if (e.length > 0) [validEtags addObject:e];
-            }
             self.eventEmitter(@"RNFileUploader-multipart-progress", @{
                 @"uploadId": self.uploadId,
                 @"progress": @(progress),
@@ -359,7 +355,7 @@ static NSInteger const MAX_RETRIES = 3;
                 @"totalBytes": @(self.totalBytes),
                 @"chunkIndex": @(index),
                 @"etag": etag ?: @"",
-                @"etags": validEtags
+                @"etags": [self.etags copy]
             });
         }
 
