@@ -438,7 +438,7 @@ class UploaderModule(val reactContext: ReactApplicationContext) : ReactContextBa
 
   @ReactMethod
   fun acknowledgeMultipartUpload(uploadId: String, promise: Promise) {
-    promise.resolve(false)
+    promise.resolve(multipartUploader.acknowledgeUpload(uploadId))
   }
 
   @ReactMethod

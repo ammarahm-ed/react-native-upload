@@ -29,6 +29,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
         private const val TAG = "MultipartUploader"
         private const val MIN_CHUNK_SIZE = 5L * 1024 * 1024 // 5MB minimum for S3
         private const val MAX_RETRIES = 3
+        private const val ACK_GRACE_MS = 30_000L
     }
 
     private class HttpStatusException(val code: Int, message: String) : Exception(message) {
@@ -97,6 +98,30 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
     )
 
     private val activeUploads = ConcurrentHashMap<String, UploadJob>()
+    private val awaitingAck = ConcurrentHashMap<String, Job>()
+    private val ackScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    private fun stopServiceIfIdle() {
+        if (activeUploads.isEmpty() && awaitingAck.isEmpty()) {
+            reactContext.applicationContext?.let { MultipartUploadService.stop(it) }
+        }
+    }
+
+    private fun holdServiceUntilAcknowledged(uploadId: String) {
+        awaitingAck.remove(uploadId)?.cancel()
+        awaitingAck[uploadId] = ackScope.launch {
+            delay(ACK_GRACE_MS)
+            awaitingAck.remove(uploadId)
+            stopServiceIfIdle()
+        }
+    }
+
+    fun acknowledgeUpload(uploadId: String): Boolean {
+        val timer = awaitingAck.remove(uploadId) ?: return false
+        timer.cancel()
+        stopServiceIfIdle()
+        return true
+    }
 
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(60, TimeUnit.SECONDS)
@@ -209,6 +234,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
             uploadJob.job.cancel()
             throw UploadAlreadyExistsException("Upload already in progress for $uploadId")
         }
+        awaitingAck.remove(uploadId)?.cancel()
 
         val context: Context? = reactContext.applicationContext
         if (context != null && showNotification) {
@@ -303,9 +329,10 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
         } finally {
             uploadJob.job.complete()
             activeUploads.remove(uploadId, uploadJob)
-            if (activeUploads.isEmpty() && context != null) {
-                MultipartUploadService.stop(context)
+            if (showNotification) {
+                holdServiceUntilAcknowledged(uploadId)
             }
+            stopServiceIfIdle()
         }
     }
 
