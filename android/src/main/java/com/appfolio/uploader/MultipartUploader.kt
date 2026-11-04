@@ -199,7 +199,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
         }
 
         val context: Context? = reactContext.applicationContext
-        if (context != null) {
+        if (context != null && showNotification) {
             val startMsg = if (initialUploadedBytes > 0) "Resuming upload..." else "Starting upload..."
             MultipartUploadService.start(context, filename, startMsg)
         }
@@ -386,7 +386,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
                 emitEvent("RNFileUploader-multipart-progress", progressParams)
 
                 val context: Context? = reactContext.applicationContext
-                if (context != null) {
+                if (context != null && showNotification) {
                     val percent = (progress * 100).toInt()
                     MultipartUploadService.updateProgress(context, filename, percent, "Uploading... $percent%")
                 }
