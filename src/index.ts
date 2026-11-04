@@ -2,6 +2,7 @@
  * Handles HTTP background file uploads from an iOS or Android device.
  */
 import {
+  AppRegistry,
   NativeModules,
   DeviceEventEmitter,
   Platform,
@@ -33,9 +34,21 @@ export type NotificationOptions = {
    */
   onProgressTitle: string;
   /**
-   * Sets notification progress message  { onProgressMessage: "Uploading new video" }
+   * Sets notification progress message. For multipart uploads {progress} is replaced with the percentage  { onProgressMessage: "Uploading new video" }
    */
   onProgressMessage: string;
+  /**
+   * Sets multipart upload notification start message  { onStartMessage: "Starting upload..." }
+   */
+  onStartMessage: string;
+  /**
+   * Sets multipart upload notification message when resuming  { onResumeMessage: "Resuming upload..." }
+   */
+  onResumeMessage: string;
+  /**
+   * Sets the Android notification channel name shown in system settings  { notificationChannelName: "Uploads" }
+   */
+  notificationChannelName: string;
   /**
    * Sets notification complete title  { onCompleteTitle: "Upload finished" }
    */
@@ -126,6 +139,95 @@ export type UploadEventData =
   | CancelledData
   | CompletedData;
 
+export type MultipartEventType =
+  | "progress"
+  | "error"
+  | "completed"
+  | "cancelled";
+
+export interface MultipartS3Options {
+  /**
+   * Unique upload ID to track the upload.
+   */
+  uploadId: string;
+  /**
+   * Path to the local file to upload (e.g. /path/to/file or file:///path/to/file).
+   */
+  path: string;
+  /**
+   * Array of presigned URLs for each chunk in sequence.
+   */
+  parts: string[];
+  /**
+   * Maximum parallel chunk uploads (default: 3).
+   */
+  maxParallel?: number;
+  /**
+   * Notification options for background service (Android).
+   */
+  notification?: Partial<NotificationOptions>;
+  /**
+   * AppGroup defined in Xcode for extensions (iOS).
+   */
+  appGroup?: string;
+  /**
+   * Fixed-length array of previously uploaded chunk ETags (matching parts array length)
+   * for resuming an existing upload session. Completed parts carry their ETag string,
+   * while uncompleted parts carry empty string "".
+   * Already uploaded chunks will be skipped and pre-filled with these ETags.
+   */
+  existingEtags?: string[];
+  /**
+   * Whether the upload can survive the app process being killed (default: true).
+   * Resumable uploads are persisted natively, resumed after a restart and can
+   * be finished later through getMultipartS3Uploads. When false, the upload
+   * still keeps running while the app is in the background but nothing is
+   * persisted, so it is gone if the app process dies.
+   */
+  resumable?: boolean;
+}
+
+export interface MultipartProgressEvent {
+  type: string;
+  uploadId: string;
+  progress?: number;
+  bytesUploaded?: number;
+  totalBytes?: number;
+  chunkIndex?: number;
+  etag?: string;
+  etags?: string[];
+  errorMessage?: string;
+}
+
+export type MultipartUploadStatus = "running" | "paused" | "completed" | "failed";
+
+export interface MultipartPendingUpload {
+  uploadId: string;
+  status: MultipartUploadStatus;
+  progress: number;
+  bytesUploaded: number;
+  totalBytes: number;
+  etags: string[];
+  error: string | null;
+}
+
+export interface MultipartCompletionEvent {
+  uploadId: string;
+  status: "completed" | "failed";
+  etags: string[];
+  error: string | null;
+}
+
+export type MultipartCompletionHandler = (
+  event: MultipartCompletionEvent,
+) => Promise<void> | void;
+
+export interface MultipartS3Result {
+  uploadId: string;
+  success: boolean;
+  etags: string[];
+}
+
 const NativeModule = NativeModules.RNFileUploader;
 const eventPrefix = 'RNFileUploader-';
 
@@ -135,6 +237,68 @@ if (NativeModules.RNFileUploader && NativeModule.addListener) {
   NativeModule.addListener(eventPrefix + 'error');
   NativeModule.addListener(eventPrefix + 'cancelled');
   NativeModule.addListener(eventPrefix + 'completed');
+  NativeModule.addListener(eventPrefix + 'multipart-progress');
+  NativeModule.addListener(eventPrefix + 'multipart-error');
+  NativeModule.addListener(eventPrefix + 'multipart-cancelled');
+  NativeModule.addListener(eventPrefix + 'multipart-completed');
+}
+
+let multipartCompletionHandler: MultipartCompletionHandler | null = null;
+const runningCompletions = new Map<string, Promise<void>>();
+
+const runMultipartCompletion = (event: MultipartCompletionEvent): Promise<void> => {
+  const running = runningCompletions.get(event.uploadId);
+  if (running) {
+    return running;
+  }
+  const handler = multipartCompletionHandler;
+  if (!handler) {
+    return Promise.resolve();
+  }
+  const run = (async () => {
+    try {
+      await handler(event);
+      await NativeModule.acknowledgeMultipartUpload(event.uploadId);
+    } catch (error) {
+      console.warn(
+        `Multipart completion handler failed for ${event.uploadId}`,
+        error,
+      );
+    } finally {
+      runningCompletions.delete(event.uploadId);
+    }
+  })();
+  runningCompletions.set(event.uploadId, run);
+  return run;
+};
+
+DeviceEventEmitter.addListener(eventPrefix + 'multipart-completed', (data: any) => {
+  runMultipartCompletion({
+    uploadId: data.uploadId,
+    status: 'completed',
+    etags: data.etags || [],
+    error: null,
+  });
+});
+
+DeviceEventEmitter.addListener(eventPrefix + 'multipart-error', (data: any) => {
+  runMultipartCompletion({
+    uploadId: data.uploadId,
+    status: 'failed',
+    etags: data.etags || [],
+    error: data.error || null,
+  });
+});
+
+if (Platform.OS === 'android') {
+  AppRegistry.registerHeadlessTask(
+    'RNMultipartUploadKeepAlive',
+    () => () => new Promise<void>(() => {}),
+  );
+  AppRegistry.registerHeadlessTask(
+    'RNMultipartUploadCompletion',
+    () => (data: MultipartCompletionEvent) => runMultipartCompletion(data),
+  );
 }
 
 export const UploadState = {
@@ -275,6 +439,90 @@ class Upload {
   /**
    * Get all currently tracked uploads
    */
+
+  /**
+   * Create an S3 / Cloud multipart chunked upload instance
+   */
+  static createMultipartS3(options: MultipartS3Options): MultipartS3Upload {
+    return MultipartS3Upload.create(options);
+  }
+
+  /**
+   * Start an S3 / Cloud multipart chunked upload directly
+   */
+  static startMultipartS3(options: MultipartS3Options): Promise<MultipartS3Result> {
+    const upload = MultipartS3Upload.create(options);
+    return upload.start();
+  }
+
+  /**
+   * Cancel an ongoing S3 multipart upload
+   */
+  static cancelMultipartS3(uploadId: string): Promise<boolean> {
+    return MultipartS3Upload.cancel(uploadId);
+  }
+
+  /**
+   * Pause an ongoing S3 multipart upload
+   */
+  static pauseMultipartS3(uploadId: string): Promise<boolean> {
+    return MultipartS3Upload.pause(uploadId);
+  }
+
+  /**
+   * Resume a paused S3 multipart upload
+   */
+  static resumeMultipartS3(uploadId: string): Promise<boolean> {
+    return MultipartS3Upload.resume(uploadId);
+  }
+
+  /**
+   * Registers the function that finishes a multipart upload (for example by
+   * sending CompleteMultipartUpload) once every part has been uploaded. It is
+   * called when the app is running and, on Android, from a headless task when
+   * the upload finished while the app was not running. Register it at the top
+   * level of your entry file so it exists when the app is started in the
+   * background. The upload is acknowledged when the handler resolves.
+   */
+  static setMultipartCompletionHandler(
+    handler: MultipartCompletionHandler | null,
+  ): void {
+    multipartCompletionHandler = handler;
+  }
+
+  /**
+   * Lists multipart uploads known to the native side, including ones that
+   * finished while the app was suspended or relaunched in the background.
+   */
+  static getMultipartS3Uploads(): Promise<MultipartPendingUpload[]> {
+    return NativeModule.getMultipartUploads();
+  }
+
+  /**
+   * Removes the stored state of a completed or failed multipart upload.
+   */
+  static acknowledgeMultipartS3(uploadId: string): Promise<boolean> {
+    return NativeModule.acknowledgeMultipartUpload(uploadId);
+  }
+
+  /**
+   * Add listener for multipart events
+   */
+  static addMultipartListener(
+    eventType: MultipartEventType,
+    uploadId: string,
+    listener: (data: any) => void,
+  ): EmitterSubscription {
+    return DeviceEventEmitter.addListener(
+      eventPrefix + "multipart-" + eventType,
+      (data: any) => {
+        if (!uploadId || !data || data.uploadId === uploadId) {
+          listener(data);
+        }
+      },
+    );
+  }
+
   static getAll(): Upload[] {
     const uploads: Upload[] = [];
     UploadRegistry.uploads.forEach(upload => uploads.push(upload));
@@ -512,6 +760,160 @@ class Upload {
   }
 }
 
+
+class MultipartS3Upload {
+  private options: MultipartS3Options;
+  private subscriptions: EmitterSubscription[] = [];
+  private startPromise: Promise<MultipartS3Result> | null = null;
+  private progressCallbacks: ((event: MultipartProgressEvent) => void)[] = [];
+  private static activeUploads: Map<string, MultipartS3Upload> = new Map();
+
+  constructor(options: MultipartS3Options) {
+    this.options = {
+      ...options,
+      maxParallel: options.maxParallel ?? 3,
+    };
+  }
+
+  static create(options: MultipartS3Options): MultipartS3Upload {
+    const existing = MultipartS3Upload.activeUploads.get(options.uploadId);
+    if (existing) {
+      return existing;
+    }
+    const upload = new MultipartS3Upload(options);
+    MultipartS3Upload.activeUploads.set(options.uploadId, upload);
+    return upload;
+  }
+
+  static getById(uploadId: string): MultipartS3Upload | undefined {
+    return MultipartS3Upload.activeUploads.get(uploadId);
+  }
+
+  static async cancel(uploadId: string): Promise<boolean> {
+    const instance = MultipartS3Upload.activeUploads.get(uploadId);
+    if (instance) {
+      return instance.cancel();
+    }
+    return NativeModule.cancelMultipartUpload(uploadId);
+  }
+
+  static async pause(uploadId: string): Promise<boolean> {
+    const instance = MultipartS3Upload.activeUploads.get(uploadId);
+    if (instance) {
+      return instance.pause();
+    }
+    return NativeModule.pauseMultipartUpload(uploadId);
+  }
+
+  static async resume(uploadId: string): Promise<boolean> {
+    const instance = MultipartS3Upload.activeUploads.get(uploadId);
+    if (instance) {
+      return instance.resume();
+    }
+    return NativeModule.resumeMultipartUpload(uploadId);
+  }
+
+  onProgress(callback: (event: MultipartProgressEvent) => void): this {
+    if (!this.progressCallbacks.includes(callback)) {
+      this.progressCallbacks.push(callback);
+    }
+    return this;
+  }
+
+  getId(): string {
+    return this.options.uploadId;
+  }
+
+  getPath(): string {
+    return this.options.path;
+  }
+
+  async start(): Promise<MultipartS3Result> {
+    if (this.startPromise) {
+      return this.startPromise;
+    }
+
+    this.setupEventListeners();
+
+    this.startPromise = (async () => {
+      try {
+        const nativeResult = await NativeModule.startMultipartUpload(this.options);
+        return nativeResult;
+      } finally {
+        this.cleanup();
+      }
+    })();
+
+    return this.startPromise;
+  }
+
+  private setupEventListeners(): void {
+    const progressSub = DeviceEventEmitter.addListener(
+      eventPrefix + "multipart-progress",
+      (data: MultipartProgressEvent) => {
+        if (data.uploadId === this.options.uploadId) {
+          this.progressCallbacks.forEach(cb => cb(data));
+        }
+      },
+    );
+    this.subscriptions.push(progressSub);
+  }
+
+  async cancel(): Promise<boolean> {
+    try {
+      const res = await NativeModule.cancelMultipartUpload(this.options.uploadId);
+      this.cleanup();
+      return res;
+    } catch (err) {
+      this.cleanup();
+      throw err;
+    }
+  }
+
+  async pause(): Promise<boolean> {
+    return NativeModule.pauseMultipartUpload(this.options.uploadId);
+  }
+
+  async resume(): Promise<boolean> {
+    return NativeModule.resumeMultipartUpload(this.options.uploadId);
+  }
+
+  private cleanup(): void {
+    this.subscriptions.forEach(sub => sub.remove());
+    this.subscriptions = [];
+    MultipartS3Upload.activeUploads.delete(this.options.uploadId);
+  }
+}
+
+export const startMultipartS3 = (options: MultipartS3Options): Promise<MultipartS3Result> =>
+  Upload.startMultipartS3(options);
+
+export const cancelMultipartS3 = (uploadId: string): Promise<boolean> =>
+  Upload.cancelMultipartS3(uploadId);
+
+export const pauseMultipartS3 = (uploadId: string): Promise<boolean> =>
+  Upload.pauseMultipartS3(uploadId);
+
+export const resumeMultipartS3 = (uploadId: string): Promise<boolean> =>
+  Upload.resumeMultipartS3(uploadId);
+
+export const setMultipartCompletionHandler = (
+  handler: MultipartCompletionHandler | null,
+): void => Upload.setMultipartCompletionHandler(handler);
+
+export const getMultipartS3Uploads = (): Promise<MultipartPendingUpload[]> =>
+  Upload.getMultipartS3Uploads();
+
+export const acknowledgeMultipartS3 = (uploadId: string): Promise<boolean> =>
+  Upload.acknowledgeMultipartS3(uploadId);
+
+export const addMultipartListener = (
+  eventType: MultipartEventType,
+  uploadId: string,
+  listener: (data: any) => void,
+): EmitterSubscription =>
+  Upload.addMultipartListener(eventType, uploadId, listener);
+
 // Legacy API exports for backward compatibility
 export const getFileInfo = (path: string): Promise<FileInfo> => {
   return NativeModule.getFileInfo(path).then((data: FileInfo) => {
@@ -562,6 +964,6 @@ export const getAllUploads = async (): Promise<NativeUploadInfo[]> => {
   return allUploads;
 };
 
-export { Upload };
+export { Upload, MultipartS3Upload };
 
 export default Upload;

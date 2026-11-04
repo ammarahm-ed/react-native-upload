@@ -140,6 +140,171 @@ const options = {
 
 Note the `field` property is required for multipart uploads.
 
+## S3 / Cloud Multipart Upload (Chunked)
+
+For large files (e.g. > 25MB) that need to be uploaded in chunked parts to AWS S3, Google Cloud Storage, Cloudflare R2, or MinIO using presigned URLs:
+
+```typescript
+import Upload from "@ammarahmed/react-native-upload";
+
+const upload = Upload.createMultipartS3({
+  uploadId: "unique-upload-id-123",
+  path: "/path/to/large-video.mp4",
+  parts: [
+    "https://s3.amazonaws.com/bucket/file?partNumber=1&uploadId=...",
+    "https://s3.amazonaws.com/bucket/file?partNumber=2&uploadId=...",
+    // ... presigned URLs for each part
+  ],
+  maxParallel: 3, // Optional: maximum parallel chunk uploads (default: 3)
+  notification: {
+    enabled: true,
+    filename: "large-video.mp4", // Optional: human-readable name in notification
+  },
+  appGroup: "group.com.myapp", // Optional: iOS App Group for Share Extensions
+});
+
+// Track progress
+upload.onProgress((event) => {
+  console.log(`Uploaded ${event.bytesUploaded}/${event.totalBytes} bytes (${(event.progress * 100).toFixed(1)}%)`);
+  console.log(`Current chunk index: ${event.chunkIndex}`);
+});
+
+try {
+  const result = await upload.start();
+  if (result.success) {
+    // Array of ETags matching the order of the parts (for S3 CompleteMultipartUpload)
+    console.log("Upload completed with ETags:", result.etags);
+  }
+} catch (error) {
+  if (error.code === "CANCELLED") {
+    console.log("Upload was cancelled");
+  } else {
+    console.error("Upload failed:", error);
+  }
+}
+
+// To cancel mid-upload:
+// await upload.cancel();
+// or statically:
+// await Upload.cancelMultipartS3("unique-upload-id-123");
+```
+
+### Resumption on Network Failure
+
+If an upload is interrupted or network drops, you can resume by passing `existingEtags`. `onProgress` emits an `etags` array matching the parts list (with empty strings for pending parts):
+
+```typescript
+const upload = Upload.createMultipartS3({
+  uploadId: savedUploadId, // Re-use the existing S3 upload ID
+  path: "/path/to/large-video.mp4",
+  parts: presignedUrls,
+  existingEtags: savedEtags, // Fixed-length array with ETags for completed parts, "" for pending parts
+});
+```
+
+### Disabling resumability
+
+Uploads are resumable by default: their state is persisted so that they survive the app process being killed. Pass `resumable: false` to an individual upload to turn that off:
+
+```typescript
+Upload.createMultipartS3({ uploadId, path, parts, resumable: false });
+```
+
+A non-resumable upload still keeps running while the app is in the background, but nothing is written to disk. If the app process dies and the app is launched again, the upload is not resumed and does not show up in `getMultipartS3Uploads()`.
+
+- Android: the foreground service is not restarted for it and no headless completion runs after a process death.
+- iOS: iOS may keep sending parts that were already queued while the app is dead. On the next launch the library cancels them and deletes their chunk files. The multipart upload is never completed, so abort it on your server if needed.
+
+### Finishing the upload in the background
+
+An S3 multipart upload is only complete once you send `CompleteMultipartUpload` with the part ETags. To make that happen even when the app is suspended, or was killed and restarted for the upload, register a completion handler. Do it at the top level of your entry file (`index.js`), outside of any component, so it exists when the app is started in the background:
+
+```typescript
+import Upload from "@ammarahmed/react-native-upload";
+
+Upload.setMultipartCompletionHandler(async ({ uploadId, status, etags, error }) => {
+  if (status !== "completed") return;
+  // Load whatever you saved when you started the upload (bucket, key, ...)
+  await completeMultipartUpload(uploadId, etags);
+});
+```
+
+- The handler is called when every part has been uploaded (or the upload failed). When it resolves, the upload is acknowledged and its stored state is removed. If it throws, the upload is not acknowledged and stays pending.
+- It is called while the app is running and, on Android, from a headless JS task when the app process was not running. Save what you need to finish the upload (for example the S3 key) to storage before starting it; the headless task starts your JS bundle from scratch.
+- If you use the handler, don't also finish the upload from the `start()` promise.
+- Fallback: completed uploads are persisted natively. If the handler could not run, check on every app launch and finish them without uploading again:
+
+```typescript
+const pending = await Upload.getMultipartS3Uploads();
+for (const upload of pending) {
+  if (upload.status === "completed") {
+    await completeMultipartUpload(upload.uploadId, upload.etags);
+    await Upload.acknowledgeMultipartS3(upload.uploadId);
+  }
+}
+```
+
+`status` is `running`, `completed` or `failed`. A failed upload keeps its `etags`, so you can start it again with `existingEtags`.
+
+### iOS Background Behavior
+
+All multipart uploads share one background `NSURLSession`. Every part is queued when the upload starts, so iOS keeps uploading while the app is suspended and wakes the app when parts finish. Upload state is persisted and reattached when the app is relaunched.
+
+Forward the system's background session event to the library in your `AppDelegate`:
+
+```swift
+func application(
+  _ application: UIApplication,
+  handleEventsForBackgroundURLSession identifier: String,
+  completionHandler: @escaping () -> Void
+) {
+  RNFileUploader.setCompletionHandlerWithIdentifier(identifier, completionHandler: completionHandler)
+}
+```
+
+(With Swift, import the library header in your bridging header: `#import <react-native-upload/RNFileUploader.h>`.)
+
+Notes:
+- The system completion handler is released when your JS calls `canSuspendIfBackground()`, which the library calls after the handler runs. Keep the handler short, iOS gives the app limited time when it wakes it.
+- Chunk files are written to a copy in Application Support (or the App Group container when `appGroup` is set) until the upload ends, so you need free space for a second copy of the file.
+- If the user force-quits the app, iOS cancels the background transfers. Resume with `existingEtags`.
+
+### Android Foreground Service and Headless Task
+
+Background support on Android is opt-in. The library does not add any permissions or services to your app. Add the following to your app's `AndroidManifest.xml`:
+
+```xml
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+<application>
+  <service
+    android:name="com.appfolio.uploader.MultipartUploadService"
+    android:exported="false"
+    android:foregroundServiceType="dataSync" />
+  <service
+    android:name="com.appfolio.uploader.MultipartCompletionService"
+    android:exported="false" />
+</application>
+```
+
+How it works:
+- Uploads run in a native engine that is independent of your Activity and of the React instance. State (part URLs, ETags, status) is saved to disk after every part.
+- With `notification.enabled` the engine runs a foreground service, which also keeps your JS timers running while the app is in the background.
+- If the system restarts the service after killing the app's process, the engine resumes the remaining parts on its own.
+- When an upload finishes and no React instance is running, `MultipartCompletionService` starts a headless JS task that runs your completion handler.
+- After an upload ends, the service stays alive until the handler resolves (or `Upload.acknowledgeMultipartS3(uploadId)` is called), or for 30 seconds, or 2 minutes if the headless task was started.
+
+Notes:
+- Google Play requires a declaration for `FOREGROUND_SERVICE_DATA_SYNC`.
+- `POST_NOTIFICATIONS` must be requested at runtime on Android 13+ for the notification to appear.
+- The foreground service is only started while your app is in the foreground. Without it, the process can still be killed by the system, and uploads are then resumed the next time the app starts.
+- A force stop or an OEM that kills the app when it is removed from recents does not restart the service. The persisted uploads resume the next time the app is opened, and completed ones can be finished with `getMultipartS3Uploads()` as shown above.
+- On Android 15+ `dataSync` services have a time limit; the service stops itself when the system times it out.
+- The library compiles against `compileSdkVersion` 35 or higher.
+- Notification texts can be customized with `onProgressTitle`, `onStartMessage`, `onResumeMessage`, `onProgressMessage` (use `{progress}` for the percentage) and `notificationChannelName`.
+
 # API
 
 ## Top Level Functions
@@ -326,7 +491,7 @@ Is there an example/sandbox app to test out this package?
 
 > Yes, there is a simple react native app that comes with an [express](https://github.com/expressjs/express) server where you can see react-native-background-upload in action and try things out in an isolated local environment.
 
-[RNBackgroundExample](https://github.com/Vydia/react-native-background-upload/blob/master/example/RNBackgroundExample)
+[UploadExample](example/UploadExample)
 
 Does it support iOS camera roll assets?
 

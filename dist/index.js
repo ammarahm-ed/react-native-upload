@@ -1,3 +1,14 @@
+var __assign = (this && this.__assign) || function () {
+    __assign = Object.assign || function(t) {
+        for (var s, i = 1, n = arguments.length; i < n; i++) {
+            s = arguments[i];
+            for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p))
+                t[p] = s[p];
+        }
+        return t;
+    };
+    return __assign.apply(this, arguments);
+};
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -37,7 +48,7 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
 /**
  * Handles HTTP background file uploads from an iOS or Android device.
  */
-import { NativeModules, DeviceEventEmitter, Platform, } from 'react-native';
+import { AppRegistry, NativeModules, DeviceEventEmitter, Platform, } from 'react-native';
 var NativeModule = NativeModules.RNFileUploader;
 var eventPrefix = 'RNFileUploader-';
 // for IOS, register event listeners or else they don't fire on DeviceEventEmitter
@@ -46,6 +57,68 @@ if (NativeModules.RNFileUploader && NativeModule.addListener) {
     NativeModule.addListener(eventPrefix + 'error');
     NativeModule.addListener(eventPrefix + 'cancelled');
     NativeModule.addListener(eventPrefix + 'completed');
+    NativeModule.addListener(eventPrefix + 'multipart-progress');
+    NativeModule.addListener(eventPrefix + 'multipart-error');
+    NativeModule.addListener(eventPrefix + 'multipart-cancelled');
+    NativeModule.addListener(eventPrefix + 'multipart-completed');
+}
+var multipartCompletionHandler = null;
+var runningCompletions = new Map();
+var runMultipartCompletion = function (event) {
+    var running = runningCompletions.get(event.uploadId);
+    if (running) {
+        return running;
+    }
+    var handler = multipartCompletionHandler;
+    if (!handler) {
+        return Promise.resolve();
+    }
+    var run = (function () { return __awaiter(void 0, void 0, void 0, function () {
+        var error_1;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0:
+                    _a.trys.push([0, 3, 4, 5]);
+                    return [4 /*yield*/, handler(event)];
+                case 1:
+                    _a.sent();
+                    return [4 /*yield*/, NativeModule.acknowledgeMultipartUpload(event.uploadId)];
+                case 2:
+                    _a.sent();
+                    return [3 /*break*/, 5];
+                case 3:
+                    error_1 = _a.sent();
+                    console.warn("Multipart completion handler failed for ".concat(event.uploadId), error_1);
+                    return [3 /*break*/, 5];
+                case 4:
+                    runningCompletions.delete(event.uploadId);
+                    return [7 /*endfinally*/];
+                case 5: return [2 /*return*/];
+            }
+        });
+    }); })();
+    runningCompletions.set(event.uploadId, run);
+    return run;
+};
+DeviceEventEmitter.addListener(eventPrefix + 'multipart-completed', function (data) {
+    runMultipartCompletion({
+        uploadId: data.uploadId,
+        status: 'completed',
+        etags: data.etags || [],
+        error: null,
+    });
+});
+DeviceEventEmitter.addListener(eventPrefix + 'multipart-error', function (data) {
+    runMultipartCompletion({
+        uploadId: data.uploadId,
+        status: 'failed',
+        etags: data.etags || [],
+        error: data.error || null,
+    });
+});
+if (Platform.OS === 'android') {
+    AppRegistry.registerHeadlessTask('RNMultipartUploadKeepAlive', function () { return function () { return new Promise(function () { }); }; });
+    AppRegistry.registerHeadlessTask('RNMultipartUploadCompletion', function () { return function (data) { return runMultipartCompletion(data); }; });
 }
 export var UploadState = {
     Cancelled: 'cancelled',
@@ -146,6 +219,71 @@ var Upload = /** @class */ (function () {
     /**
      * Get all currently tracked uploads
      */
+    /**
+     * Create an S3 / Cloud multipart chunked upload instance
+     */
+    Upload.createMultipartS3 = function (options) {
+        return MultipartS3Upload.create(options);
+    };
+    /**
+     * Start an S3 / Cloud multipart chunked upload directly
+     */
+    Upload.startMultipartS3 = function (options) {
+        var upload = MultipartS3Upload.create(options);
+        return upload.start();
+    };
+    /**
+     * Cancel an ongoing S3 multipart upload
+     */
+    Upload.cancelMultipartS3 = function (uploadId) {
+        return MultipartS3Upload.cancel(uploadId);
+    };
+    /**
+     * Pause an ongoing S3 multipart upload
+     */
+    Upload.pauseMultipartS3 = function (uploadId) {
+        return MultipartS3Upload.pause(uploadId);
+    };
+    /**
+     * Resume a paused S3 multipart upload
+     */
+    Upload.resumeMultipartS3 = function (uploadId) {
+        return MultipartS3Upload.resume(uploadId);
+    };
+    /**
+     * Registers the function that finishes a multipart upload (for example by
+     * sending CompleteMultipartUpload) once every part has been uploaded. It is
+     * called when the app is running and, on Android, from a headless task when
+     * the upload finished while the app was not running. Register it at the top
+     * level of your entry file so it exists when the app is started in the
+     * background. The upload is acknowledged when the handler resolves.
+     */
+    Upload.setMultipartCompletionHandler = function (handler) {
+        multipartCompletionHandler = handler;
+    };
+    /**
+     * Lists multipart uploads known to the native side, including ones that
+     * finished while the app was suspended or relaunched in the background.
+     */
+    Upload.getMultipartS3Uploads = function () {
+        return NativeModule.getMultipartUploads();
+    };
+    /**
+     * Removes the stored state of a completed or failed multipart upload.
+     */
+    Upload.acknowledgeMultipartS3 = function (uploadId) {
+        return NativeModule.acknowledgeMultipartUpload(uploadId);
+    };
+    /**
+     * Add listener for multipart events
+     */
+    Upload.addMultipartListener = function (eventType, uploadId, listener) {
+        return DeviceEventEmitter.addListener(eventPrefix + "multipart-" + eventType, function (data) {
+            if (!uploadId || !data || data.uploadId === uploadId) {
+                listener(data);
+            }
+        });
+    };
     Upload.getAll = function () {
         var uploads = [];
         UploadRegistry.uploads.forEach(function (upload) { return uploads.push(upload); });
@@ -165,7 +303,7 @@ var Upload = /** @class */ (function () {
      */
     Upload.prototype.start = function () {
         return __awaiter(this, void 0, void 0, function () {
-            var nativeUploads, existingUpload, _a, error_1;
+            var nativeUploads, existingUpload, _a, error_2;
             var _this = this;
             return __generator(this, function (_b) {
                 switch (_b.label) {
@@ -208,12 +346,12 @@ var Upload = /** @class */ (function () {
                         UploadRegistry.register(this);
                         return [3 /*break*/, 6];
                     case 5:
-                        error_1 = _b.sent();
+                        error_2 = _b.sent();
                         this.cleanup();
                         if (this.rejectStart) {
-                            this.rejectStart(error_1);
+                            this.rejectStart(error_2);
                         }
-                        throw error_1;
+                        throw error_2;
                     case 6: return [2 /*return*/, this.startPromise];
                 }
             });
@@ -304,7 +442,7 @@ var Upload = /** @class */ (function () {
      */
     Upload.prototype.cancel = function () {
         return __awaiter(this, void 0, void 0, function () {
-            var result, error_2;
+            var result, error_3;
             return __generator(this, function (_a) {
                 switch (_a.label) {
                     case 0:
@@ -320,9 +458,9 @@ var Upload = /** @class */ (function () {
                         // Don't cleanup here - let the cancelled event handle it
                         return [2 /*return*/, result];
                     case 3:
-                        error_2 = _a.sent();
+                        error_3 = _a.sent();
                         this.cleanup();
-                        throw error_2;
+                        throw error_3;
                     case 4: return [2 /*return*/];
                 }
             });
@@ -364,6 +502,177 @@ var Upload = /** @class */ (function () {
     };
     return Upload;
 }());
+var MultipartS3Upload = /** @class */ (function () {
+    function MultipartS3Upload(options) {
+        var _a;
+        this.subscriptions = [];
+        this.startPromise = null;
+        this.progressCallbacks = [];
+        this.options = __assign(__assign({}, options), { maxParallel: (_a = options.maxParallel) !== null && _a !== void 0 ? _a : 3 });
+    }
+    MultipartS3Upload.create = function (options) {
+        var existing = MultipartS3Upload.activeUploads.get(options.uploadId);
+        if (existing) {
+            return existing;
+        }
+        var upload = new MultipartS3Upload(options);
+        MultipartS3Upload.activeUploads.set(options.uploadId, upload);
+        return upload;
+    };
+    MultipartS3Upload.getById = function (uploadId) {
+        return MultipartS3Upload.activeUploads.get(uploadId);
+    };
+    MultipartS3Upload.cancel = function (uploadId) {
+        return __awaiter(this, void 0, void 0, function () {
+            var instance;
+            return __generator(this, function (_a) {
+                instance = MultipartS3Upload.activeUploads.get(uploadId);
+                if (instance) {
+                    return [2 /*return*/, instance.cancel()];
+                }
+                return [2 /*return*/, NativeModule.cancelMultipartUpload(uploadId)];
+            });
+        });
+    };
+    MultipartS3Upload.pause = function (uploadId) {
+        return __awaiter(this, void 0, void 0, function () {
+            var instance;
+            return __generator(this, function (_a) {
+                instance = MultipartS3Upload.activeUploads.get(uploadId);
+                if (instance) {
+                    return [2 /*return*/, instance.pause()];
+                }
+                return [2 /*return*/, NativeModule.pauseMultipartUpload(uploadId)];
+            });
+        });
+    };
+    MultipartS3Upload.resume = function (uploadId) {
+        return __awaiter(this, void 0, void 0, function () {
+            var instance;
+            return __generator(this, function (_a) {
+                instance = MultipartS3Upload.activeUploads.get(uploadId);
+                if (instance) {
+                    return [2 /*return*/, instance.resume()];
+                }
+                return [2 /*return*/, NativeModule.resumeMultipartUpload(uploadId)];
+            });
+        });
+    };
+    MultipartS3Upload.prototype.onProgress = function (callback) {
+        if (!this.progressCallbacks.includes(callback)) {
+            this.progressCallbacks.push(callback);
+        }
+        return this;
+    };
+    MultipartS3Upload.prototype.getId = function () {
+        return this.options.uploadId;
+    };
+    MultipartS3Upload.prototype.getPath = function () {
+        return this.options.path;
+    };
+    MultipartS3Upload.prototype.start = function () {
+        return __awaiter(this, void 0, void 0, function () {
+            var _this = this;
+            return __generator(this, function (_a) {
+                if (this.startPromise) {
+                    return [2 /*return*/, this.startPromise];
+                }
+                this.setupEventListeners();
+                this.startPromise = (function () { return __awaiter(_this, void 0, void 0, function () {
+                    var nativeResult;
+                    return __generator(this, function (_a) {
+                        switch (_a.label) {
+                            case 0:
+                                _a.trys.push([0, , 2, 3]);
+                                return [4 /*yield*/, NativeModule.startMultipartUpload(this.options)];
+                            case 1:
+                                nativeResult = _a.sent();
+                                return [2 /*return*/, nativeResult];
+                            case 2:
+                                this.cleanup();
+                                return [7 /*endfinally*/];
+                            case 3: return [2 /*return*/];
+                        }
+                    });
+                }); })();
+                return [2 /*return*/, this.startPromise];
+            });
+        });
+    };
+    MultipartS3Upload.prototype.setupEventListeners = function () {
+        var _this = this;
+        var progressSub = DeviceEventEmitter.addListener(eventPrefix + "multipart-progress", function (data) {
+            if (data.uploadId === _this.options.uploadId) {
+                _this.progressCallbacks.forEach(function (cb) { return cb(data); });
+            }
+        });
+        this.subscriptions.push(progressSub);
+    };
+    MultipartS3Upload.prototype.cancel = function () {
+        return __awaiter(this, void 0, void 0, function () {
+            var res, err_1;
+            return __generator(this, function (_a) {
+                switch (_a.label) {
+                    case 0:
+                        _a.trys.push([0, 2, , 3]);
+                        return [4 /*yield*/, NativeModule.cancelMultipartUpload(this.options.uploadId)];
+                    case 1:
+                        res = _a.sent();
+                        this.cleanup();
+                        return [2 /*return*/, res];
+                    case 2:
+                        err_1 = _a.sent();
+                        this.cleanup();
+                        throw err_1;
+                    case 3: return [2 /*return*/];
+                }
+            });
+        });
+    };
+    MultipartS3Upload.prototype.pause = function () {
+        return __awaiter(this, void 0, void 0, function () {
+            return __generator(this, function (_a) {
+                return [2 /*return*/, NativeModule.pauseMultipartUpload(this.options.uploadId)];
+            });
+        });
+    };
+    MultipartS3Upload.prototype.resume = function () {
+        return __awaiter(this, void 0, void 0, function () {
+            return __generator(this, function (_a) {
+                return [2 /*return*/, NativeModule.resumeMultipartUpload(this.options.uploadId)];
+            });
+        });
+    };
+    MultipartS3Upload.prototype.cleanup = function () {
+        this.subscriptions.forEach(function (sub) { return sub.remove(); });
+        this.subscriptions = [];
+        MultipartS3Upload.activeUploads.delete(this.options.uploadId);
+    };
+    MultipartS3Upload.activeUploads = new Map();
+    return MultipartS3Upload;
+}());
+export var startMultipartS3 = function (options) {
+    return Upload.startMultipartS3(options);
+};
+export var cancelMultipartS3 = function (uploadId) {
+    return Upload.cancelMultipartS3(uploadId);
+};
+export var pauseMultipartS3 = function (uploadId) {
+    return Upload.pauseMultipartS3(uploadId);
+};
+export var resumeMultipartS3 = function (uploadId) {
+    return Upload.resumeMultipartS3(uploadId);
+};
+export var setMultipartCompletionHandler = function (handler) { return Upload.setMultipartCompletionHandler(handler); };
+export var getMultipartS3Uploads = function () {
+    return Upload.getMultipartS3Uploads();
+};
+export var acknowledgeMultipartS3 = function (uploadId) {
+    return Upload.acknowledgeMultipartS3(uploadId);
+};
+export var addMultipartListener = function (eventType, uploadId, listener) {
+    return Upload.addMultipartListener(eventType, uploadId, listener);
+};
 // Legacy API exports for backward compatibility
 export var getFileInfo = function (path) {
     return NativeModule.getFileInfo(path).then(function (data) {
@@ -408,5 +717,5 @@ export var getAllUploads = function () { return __awaiter(void 0, void 0, void 0
         }
     });
 }); };
-export { Upload };
+export { Upload, MultipartS3Upload };
 export default Upload;
