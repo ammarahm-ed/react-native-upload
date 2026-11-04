@@ -2,6 +2,7 @@
 
 static int64_t const MIN_CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB for S3
 static NSInteger const MAX_RETRIES = 3;
+static NSUInteger const COPY_BLOCK_SIZE = 1024 * 1024;
 
 @interface RNMultipartSession : NSObject <NSURLSessionTaskDelegate, NSURLSessionDataDelegate>
 
@@ -213,11 +214,44 @@ static NSInteger const MAX_RETRIES = 3;
     }
 
     @try {
+        [[NSFileManager defaultManager] removeItemAtPath:tempPath error:nil];
+        if (![[NSFileManager defaultManager] createFileAtPath:tempPath contents:nil attributes:nil]) {
+            [fileHandle closeFile];
+            [self failWithError:[NSError errorWithDomain:@"RNMultipartUploader" code:-1 userInfo:@{NSLocalizedDescriptionKey: @"Cannot create temporary chunk file"}]];
+            return;
+        }
+        NSFileHandle *outHandle = [NSFileHandle fileHandleForWritingAtPath:tempPath];
+        if (!outHandle) {
+            [fileHandle closeFile];
+            [self failWithError:[NSError errorWithDomain:@"RNMultipartUploader" code:-1 userInfo:@{NSLocalizedDescriptionKey: @"Cannot open temporary chunk file for writing"}]];
+            return;
+        }
+
         [fileHandle seekToFileOffset:(unsigned long long)offset];
-        NSData *chunkData = [fileHandle readDataOfLength:(NSUInteger)size];
+        int64_t remaining = size;
+        BOOL copyFailed = NO;
+        while (remaining > 0) {
+            @autoreleasepool {
+                NSUInteger toRead = (NSUInteger)MIN((int64_t)COPY_BLOCK_SIZE, remaining);
+                NSData *block = [fileHandle readDataOfLength:toRead];
+                if (block.length == 0) {
+                    copyFailed = YES;
+                } else {
+                    [outHandle writeData:block];
+                    remaining -= (int64_t)block.length;
+                }
+            }
+            if (copyFailed) break;
+        }
+        [outHandle synchronizeFile];
+        [outHandle closeFile];
         [fileHandle closeFile];
 
-        [chunkData writeToFile:tempPath atomically:YES];
+        if (copyFailed) {
+            [[NSFileManager defaultManager] removeItemAtPath:tempPath error:nil];
+            [self failWithError:[NSError errorWithDomain:@"RNMultipartUploader" code:-1 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to read chunk %ld from file", (long)index]}]];
+            return;
+        }
 
         NSURL *url = [NSURL URLWithString:self.uploadUrls[index]];
         NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
