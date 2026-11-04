@@ -227,6 +227,7 @@ Notes:
 - Google Play requires a declaration for `FOREGROUND_SERVICE_DATA_SYNC`.
 - `POST_NOTIFICATIONS` must be requested at runtime on Android 13+ for the notification to appear.
 - The service is only used when `notification.enabled` is `true`, and it is started only while your app is in the foreground. Otherwise the upload runs without a service.
+- When an upload ends, the service stays alive until you call `Upload.acknowledgeMultipartS3(uploadId)` (after you have sent `CompleteMultipartUpload`), or for 30 seconds, whichever comes first.
 - On Android 15+ `dataSync` services have a time limit; the service stops itself when the system times it out.
 - The library compiles against `compileSdkVersion` 35 or higher.
 - Notification texts can be customized with `onProgressTitle`, `onStartMessage`, `onResumeMessage`, `onProgressMessage` (use `{progress}` for the percentage) and `notificationChannelName`.

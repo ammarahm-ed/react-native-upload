@@ -7,6 +7,8 @@ import { saveSession } from './background';
 type Result = { name: string; ok: boolean; detail: string };
 type File = { path: string; size: number; md5: string };
 
+const usedUploadIds = new Set<string>();
+
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 const runMultipart = async (
@@ -25,6 +27,7 @@ const runMultipart = async (
   },
 ) => {
   const session = opts.session ?? (await createS3Upload(base, opts.parts, opts.failure ?? null, opts.failPart ?? 2, opts.delay));
+  usedUploadIds.add(session.uploadId);
   const upload = Upload.createMultipartS3({
     uploadId: session.uploadId,
     path: file.path,
@@ -224,13 +227,16 @@ export const runAll = async (
   for (const u of await Upload.getMultipartS3Uploads()) {
     await Upload.acknowledgeMultipartS3(u.uploadId);
   }
+  for (const id of usedUploadIds) {
+    await Upload.acknowledgeMultipartS3(id);
+  }
 
   const passed = results.filter(r => r.ok).length;
   report(`DONE ${passed}/${results.length} passed`);
   return results;
 };
 
-export const startBackgroundUpload = async (base: string, report: (line: string) => void) => {
+export const startBackgroundUpload = async (base: string, report: (line: string) => void | Promise<void>) => {
   const file = await generateFile(50);
   report(`bg file ${file.size} bytes md5 ${file.md5}`);
   const session = await createS3Upload(base, 5, null, 1, 6000);
@@ -247,7 +253,8 @@ export const startBackgroundUpload = async (base: string, report: (line: string)
     .then(async result => {
       if (Platform.OS !== 'android') return;
       const done = await completeS3Upload(base, session, result.etags);
-      report(`FINALIZED ${session.uploadId} md5 ${done.md5} ${done.md5 === file.md5 ? 'MD5 MATCH' : 'MD5 MISMATCH'}`);
+      await report(`FINALIZED ${session.uploadId} md5 ${done.md5} ${done.md5 === file.md5 ? 'MD5 MATCH' : 'MD5 MISMATCH'}`);
+      await Upload.acknowledgeMultipartS3(session.uploadId);
     })
     .catch(e => report(`bg upload error ${e.code} ${e.message}`));
 };

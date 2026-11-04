@@ -162,7 +162,7 @@ export default function App() {
     setStatus('running all scenarios');
     const report = (line: string) => {
       log(line);
-      fetch(`${base}/report`, { method: 'POST', body: line }).catch(() => {});
+      return fetch(`${base}/report`, { method: 'POST', body: line }).then(() => {}, () => {});
     };
     try {
       await runAll(base, report);
@@ -175,7 +175,7 @@ export default function App() {
   useEffect(() => {
     const report = (line: string) => {
       log(line);
-      fetch(`${base}/report`, { method: 'POST', body: line }).catch(() => {});
+      return fetch(`${base}/report`, { method: 'POST', body: line }).then(() => {}, () => {});
     };
     const detach = attachBackgroundCompletion(report);
     fetch(`${base}/autorun`)
@@ -238,7 +238,7 @@ export default function App() {
             onPress={() =>
               startBackgroundUpload(base, line => {
                 log(line);
-                fetch(`${base}/report`, { method: 'POST', body: line }).catch(() => {});
+                return fetch(`${base}/report`, { method: 'POST', body: line }).then(() => {}, () => {});
               })
             }
           />
