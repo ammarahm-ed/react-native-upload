@@ -49,11 +49,15 @@ const proxyToS3 = (req, res, url) => {
       headers: req.headers,
     },
     up => {
+      log('s3 upstream', req.method, target.pathname, up.statusCode);
       res.writeHead(up.statusCode, up.headers);
       up.pipe(res);
     },
   );
-  upstream.on('error', e => json(res, 502, {error: String(e)}));
+  upstream.on('error', e => {
+    log('s3 upstream error', String(e));
+    json(res, 502, {error: String(e)});
+  });
   req.pipe(upstream);
 };
 

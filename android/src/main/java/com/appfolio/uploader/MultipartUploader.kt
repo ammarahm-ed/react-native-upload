@@ -301,6 +301,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
             emitEvent("RNFileUploader-multipart-error", errorParams)
             throw e
         } finally {
+            uploadJob.job.complete()
             activeUploads.remove(uploadId, uploadJob)
             if (activeUploads.isEmpty() && context != null) {
                 MultipartUploadService.stop(context)
