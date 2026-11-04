@@ -13,6 +13,7 @@ export const createS3Upload = async (
   parts: number,
   failure: Failure,
   failPart: number,
+  delay?: number,
 ): Promise<S3Session> => {
   const res = await fetch(`${base}/s3/create`, {
     method: 'POST',
@@ -23,6 +24,7 @@ export const createS3Upload = async (
       failPart,
       fail: failure?.status,
       times: failure?.times,
+      delay,
     }),
   });
   if (!res.ok) throw new Error(`create failed: ${res.status}`);

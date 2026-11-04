@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Platform,
   SafeAreaView,
@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import Upload from '@ammarahmed/react-native-upload';
 import { generateFile } from './src/files';
+import { runAll } from './src/scenarios';
 import {
   Failure,
   completeS3Upload,
@@ -90,7 +91,7 @@ export default function App() {
     setStatus(`simple ${type} uploading`);
     const upload = Upload.create({
       url: type === 'raw' ? rawUrl(base, failure) : formUrl(base, failure),
-      path: f.path,
+      path: `file://${f.path}`,
       method: 'POST',
       type,
       field: type === 'multipart' ? 'file' : undefined,
@@ -156,6 +157,27 @@ export default function App() {
     }
   };
 
+  const runSuite = useCallback(async () => {
+    setStatus('running all scenarios');
+    const report = (line: string) => {
+      log(line);
+      fetch(`${base}/report`, { method: 'POST', body: line }).catch(() => {});
+    };
+    try {
+      await runAll(base, report);
+    } catch (e: any) {
+      report(`suite crashed: ${e.message}`);
+    }
+    setStatus('suite finished');
+  }, [base, log]);
+
+  useEffect(() => {
+    fetch(`${base}/autorun`)
+      .then(r => r.json())
+      .then(r => r.run && runSuite())
+      .catch(() => {});
+  }, []);
+
   const withId = async (name: string, fn: (id: string) => Promise<boolean>) => {
     const id = s3Ref.current?.uploadId;
     if (!id) return log('no multipart upload');
@@ -193,6 +215,10 @@ export default function App() {
             ))}
           </View>
           <Text style={styles.hint}>Applies to simple uploads and to the chosen part of the next multipart upload (new uploads only).</Text>
+        </Section>
+
+        <Section title="Automated">
+          <Button title="Run all scenarios" onPress={runSuite} />
         </Section>
 
         <Section title="Simple upload">

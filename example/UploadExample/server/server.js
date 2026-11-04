@@ -39,6 +39,7 @@ const proxyToS3 = (req, res, url) => {
   const target = new URL(url.href);
   target.searchParams.delete('fail');
   target.searchParams.delete('times');
+  target.searchParams.delete('delay');
   const upstream = http.request(
     {
       host: '127.0.0.1',
@@ -114,6 +115,15 @@ const server = http.createServer(async (req, res) => {
   const q = url.searchParams;
 
   try {
+    if (req.method === 'GET' && url.pathname === '/autorun') {
+      return json(res, 200, {run: process.env.AUTORUN === '1'});
+    }
+
+    if (req.method === 'POST' && url.pathname === '/report') {
+      console.log('[app]', (await readBody(req)).toString());
+      return json(res, 200, {});
+    }
+
     if (req.method === 'GET' && url.pathname === '/health') {
       return json(res, 200, {ok: true});
     }
@@ -165,11 +175,13 @@ const server = http.createServer(async (req, res) => {
         log('s3 injected failure', status, key, q.get('partNumber'));
         return json(res, status, {error: 'injected failure'});
       }
+      const delay = Number(q.get('delay') || 0);
+      if (delay) await new Promise(r => setTimeout(r, delay));
       return proxyToS3(req, res, url);
     }
 
     if (req.method === 'POST' && url.pathname === '/s3/create') {
-      const {base, parts: count, failPart, fail, times} = JSON.parse((await readBody(req)).toString());
+      const {base, parts: count, failPart, fail, times, delay} = JSON.parse((await readBody(req)).toString());
       const client = s3ClientFor(base);
       const key = `file-${crypto.randomBytes(6).toString('hex')}.bin`;
       const created = await client.send(new CreateMultipartUploadCommand({Bucket: BUCKET, Key: key}));
@@ -181,6 +193,7 @@ const server = http.createServer(async (req, res) => {
           {expiresIn: 3600},
         );
         if (fail && i === failPart) signed += `&fail=${fail}&times=${times || 1}`;
+        if (delay) signed += `&delay=${delay}`;
         urls.push(signed);
       }
       log('s3 create', key, created.UploadId, count, 'parts');
