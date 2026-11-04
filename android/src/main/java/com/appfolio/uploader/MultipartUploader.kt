@@ -29,6 +29,11 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
         private const val MAX_RETRIES = 3
     }
 
+    private class HttpStatusException(val code: Int, message: String) : Exception(message) {
+        val isRetryable: Boolean
+            get() = code >= 500 || code == 408 || code == 429
+    }
+
     private class FileRegionBody(
         private val file: File,
         private val offset: Long,
@@ -351,7 +356,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
 
                 if (!response.isSuccessful) {
                     val errorBody = response.body?.string() ?: ""
-                    throw Exception("HTTP ${response.code}: $errorBody")
+                    throw HttpStatusException(response.code, "HTTP ${response.code}: $errorBody")
                 }
 
                 val etag = response.header("ETag")?.trim('"')
@@ -409,6 +414,9 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
                         MultipartUploadService.stop(ctx)
                     }
                     throw CancellationException("Upload cancelled: file deleted")
+                }
+                if (e is HttpStatusException && !e.isRetryable) {
+                    throw e
                 }
                 lastError = e
                 retries++
