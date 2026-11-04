@@ -219,6 +219,10 @@ export const runAll = async (
     return `resumed with ${doneCount} saved parts, md5 match`;
   });
 
+  for (const u of await Upload.getMultipartS3Uploads()) {
+    await Upload.acknowledgeMultipartS3(u.uploadId);
+  }
+
   const passed = results.filter(r => r.ok).length;
   report(`DONE ${passed}/${results.length} passed`);
   return results;
