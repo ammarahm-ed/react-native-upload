@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import Upload from '@ammarahmed/react-native-upload';
 import { completeS3Upload, createS3Upload, formUrl, rawUrl, Failure } from './api';
 import { generateFile, simpleUploadPath } from './files';
@@ -240,7 +241,13 @@ export const startBackgroundUpload = async (base: string, report: (line: string)
     path: file.path,
     parts: session.urls,
     maxParallel: 3,
+    notification: { enabled: true, onProgressTitle: 'Background upload' },
   })
     .start()
+    .then(async result => {
+      if (Platform.OS !== 'android') return;
+      const done = await completeS3Upload(base, session, result.etags);
+      report(`FINALIZED ${session.uploadId} md5 ${done.md5} ${done.md5 === file.md5 ? 'MD5 MATCH' : 'MD5 MISMATCH'}`);
+    })
     .catch(e => report(`bg upload error ${e.code} ${e.message}`));
 };
