@@ -92,7 +92,7 @@ static NSUInteger const COPY_BLOCK_SIZE = 1024 * 1024;
             }
         }
 
-        NSString *sessionId = [NSString stringWithFormat:@"com.reactnativeupload.multipart.%@", _uploadId];
+        NSString *sessionId = [NSString stringWithFormat:@"com.reactnativeupload.multipart.%@.%@", _uploadId, [[NSUUID UUID] UUIDString]];
         NSURLSessionConfiguration *config = [NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:sessionId];
         config.isDiscretionary = NO;
         config.sessionSendsLaunchEvents = YES;
