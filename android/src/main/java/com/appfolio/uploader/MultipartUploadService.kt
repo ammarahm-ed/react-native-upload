@@ -35,12 +35,21 @@ class MultipartUploadService : Service() {
             return state.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE
         }
 
-        fun start(context: Context, title: String, message: String) {
+        fun ensureChannel(context: Context, channelName: String) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                val channel = NotificationChannel(CHANNEL_ID, channelName, NotificationManager.IMPORTANCE_LOW)
+                manager?.createNotificationChannel(channel)
+            }
+        }
+
+        fun start(context: Context, title: String, message: String, channelName: String) {
             if (!isAppInForeground(context)) {
                 Log.w(TAG, "App is not in the foreground, uploading without a foreground service")
                 return
             }
             try {
+                ensureChannel(context, channelName)
                 val intent = Intent(context, MultipartUploadService::class.java).apply {
                     action = ACTION_START
                     putExtra(EXTRA_TITLE, title)
@@ -110,7 +119,6 @@ class MultipartUploadService : Service() {
         super.onCreate()
         instance = this
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-        createNotificationChannel()
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -118,8 +126,8 @@ class MultipartUploadService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
-                val title = intent.getStringExtra(EXTRA_TITLE) ?: "Uploading..."
-                val message = intent.getStringExtra(EXTRA_MESSAGE) ?: "Starting upload..."
+                val title = intent.getStringExtra(EXTRA_TITLE) ?: ""
+                val message = intent.getStringExtra(EXTRA_MESSAGE) ?: ""
                 try {
                     startForegroundWithNotification(title, 0, message)
                 } catch (e: Exception) {
@@ -159,17 +167,6 @@ class MultipartUploadService : Service() {
             Log.w(TAG, "Error in stopForeground: ${e.message}")
         } finally {
             stopSelf()
-        }
-    }
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Background Upload Channel",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            notificationManager?.createNotificationChannel(channel)
         }
     }
 

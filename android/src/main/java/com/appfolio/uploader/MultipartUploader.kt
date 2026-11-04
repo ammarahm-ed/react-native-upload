@@ -66,6 +66,17 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
         }
     }
 
+    private class NotificationTexts(map: ReadableMap?, filename: String) {
+        private fun string(key: String, default: String): String =
+            if (map != null && map.hasKey(key) && map.getType(key) == ReadableType.String) map.getString(key) ?: default else default
+
+        val title = string("onProgressTitle", filename)
+        val startMessage = string("onStartMessage", "Starting upload...")
+        val resumeMessage = string("onResumeMessage", "Resuming upload...")
+        val progressMessage = string("onProgressMessage", "Uploading... {progress}%")
+        val channelName = string("notificationChannelName", "Background Upload Channel")
+    }
+
     private data class PartInfo(
         val partNumber: Int,
         val url: String,
@@ -142,6 +153,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
 
         val showNotification = notificationMap?.hasKey("enabled") == true && notificationMap.getBoolean("enabled")
         val filename = notificationMap?.getString("filename") ?: file.name
+        val texts = NotificationTexts(notificationMap, filename)
 
         val fileSize = file.length()
         if (fileSize <= 0) {
@@ -200,8 +212,8 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
 
         val context: Context? = reactContext.applicationContext
         if (context != null && showNotification) {
-            val startMsg = if (initialUploadedBytes > 0) "Resuming upload..." else "Starting upload..."
-            MultipartUploadService.start(context, filename, startMsg)
+            val startMsg = if (initialUploadedBytes > 0) texts.resumeMessage else texts.startMessage
+            MultipartUploadService.start(context, texts.title, startMsg, texts.channelName)
         }
 
         if (initialUploadedBytes > 0) {
@@ -245,7 +257,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
                 val chunkJobs = parts.map { part ->
                     async {
                         semaphore.withPermit {
-                            uploadPart(file, part, uploadJob, filename, showNotification)
+                            uploadPart(file, part, uploadJob, texts, showNotification)
                         }
                     }
                 }
@@ -300,7 +312,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
         file: File,
         part: PartInfo,
         uploadJob: UploadJob,
-        filename: String,
+        texts: NotificationTexts,
         showNotification: Boolean
     ): Boolean = withContext(Dispatchers.IO) {
         if (uploadJob.partETags.containsKey(part.partNumber)) {
@@ -388,7 +400,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
                 val context: Context? = reactContext.applicationContext
                 if (context != null && showNotification) {
                     val percent = (progress * 100).toInt()
-                    MultipartUploadService.updateProgress(context, filename, percent, "Uploading... $percent%")
+                    MultipartUploadService.updateProgress(context, texts.title, percent, texts.progressMessage.replace("{progress}", percent.toString()))
                 }
 
                 return@withContext true

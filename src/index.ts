@@ -33,9 +33,21 @@ export type NotificationOptions = {
    */
   onProgressTitle: string;
   /**
-   * Sets notification progress message  { onProgressMessage: "Uploading new video" }
+   * Sets notification progress message. For multipart uploads {progress} is replaced with the percentage  { onProgressMessage: "Uploading new video" }
    */
   onProgressMessage: string;
+  /**
+   * Sets multipart upload notification start message  { onStartMessage: "Starting upload..." }
+   */
+  onStartMessage: string;
+  /**
+   * Sets multipart upload notification message when resuming  { onResumeMessage: "Resuming upload..." }
+   */
+  onResumeMessage: string;
+  /**
+   * Sets the Android notification channel name shown in system settings  { notificationChannelName: "Uploads" }
+   */
+  notificationChannelName: string;
   /**
    * Sets notification complete title  { onCompleteTitle: "Upload finished" }
    */
