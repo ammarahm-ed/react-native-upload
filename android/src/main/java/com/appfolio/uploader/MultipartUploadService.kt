@@ -1,5 +1,6 @@
 package com.appfolio.uploader
 
+import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -28,7 +29,17 @@ class MultipartUploadService : Service() {
         const val EXTRA_TITLE = "extra_title"
         const val EXTRA_MESSAGE = "extra_message"
 
+        private fun isAppInForeground(context: Context): Boolean {
+            val state = ActivityManager.RunningAppProcessInfo()
+            ActivityManager.getMyMemoryState(state)
+            return state.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE
+        }
+
         fun start(context: Context, title: String, message: String) {
+            if (!isAppInForeground(context)) {
+                Log.w(TAG, "App is not in the foreground, uploading without a foreground service")
+                return
+            }
             try {
                 val intent = Intent(context, MultipartUploadService::class.java).apply {
                     action = ACTION_START
