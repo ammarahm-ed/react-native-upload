@@ -22,6 +22,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
+class UploadAlreadyExistsException(message: String) : Exception(message)
+
 class MultipartUploader(private val reactContext: ReactApplicationContext) {
     companion object {
         private const val TAG = "MultipartUploader"
@@ -191,9 +193,10 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
             completedChunks = AtomicLong(initialCompleted),
             partETags = initialETags
         )
-        activeUploads[uploadId] = uploadJob
-        activeUploads[file.name] = uploadJob
-        activeUploads[file.absolutePath] = uploadJob
+        if (activeUploads.putIfAbsent(uploadId, uploadJob) != null) {
+            uploadJob.job.cancel()
+            throw UploadAlreadyExistsException("Upload already in progress for $uploadId")
+        }
 
         val context: Context? = reactContext.applicationContext
         if (context != null) {
@@ -286,9 +289,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
             emitEvent("RNFileUploader-multipart-error", errorParams)
             throw e
         } finally {
-            activeUploads.remove(uploadId)
-            activeUploads.remove(file.name)
-            activeUploads.remove(file.absolutePath)
+            activeUploads.remove(uploadId, uploadJob)
             if (activeUploads.isEmpty() && context != null) {
                 MultipartUploadService.stop(context)
             }

@@ -411,6 +411,10 @@ class UploaderModule(val reactContext: ReactApplicationContext) : ReactContextBa
         promise.resolve(result)
       } catch (e: CancellationException) {
         promise.reject("CANCELLED", "Upload cancelled")
+      } catch (e: UploadAlreadyExistsException) {
+        promise.reject("ALREADY_EXISTS", e.message)
+      } catch (e: IllegalArgumentException) {
+        promise.reject("INVALID_ARGUMENT", e.message)
       } catch (e: Throwable) {
         promise.reject("MULTIPART_UPLOAD_ERROR", e.message, e)
       }
