@@ -1,6 +1,6 @@
 import Upload from '@ammarahmed/react-native-upload';
 import { completeS3Upload, createS3Upload, formUrl, rawUrl, Failure } from './api';
-import { generateFile } from './files';
+import { generateFile, simpleUploadPath } from './files';
 import { saveSession } from './background';
 
 type Result = { name: string; ok: boolean; detail: string };
@@ -68,7 +68,7 @@ export const runAll = async (
   await scenario('simple raw upload', async () => {
     const res = await Upload.create({
       url: rawUrl(base, null),
-      path: `file://${file.path}`,
+      path: simpleUploadPath(file.path),
       method: 'POST',
       type: 'raw',
       headers: { 'content-type': 'application/octet-stream' },
@@ -82,7 +82,7 @@ export const runAll = async (
   await scenario('simple form multipart upload', async () => {
     const res = await Upload.create({
       url: formUrl(base, null),
-      path: `file://${file.path}`,
+      path: simpleUploadPath(file.path),
       method: 'POST',
       type: 'multipart',
       field: 'file',
@@ -98,7 +98,7 @@ export const runAll = async (
   await scenario('simple upload server 500 reports error', async () => {
     const res = await Upload.create({
       url: rawUrl(base, { status: 500, times: 1 }),
-      path: `file://${file.path}`,
+      path: simpleUploadPath(file.path),
       method: 'POST',
       type: 'raw',
     }).start();

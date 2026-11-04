@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import RNFS from 'react-native-fs';
 
 const BLOCK_BYTES = 768 * 1024;
@@ -28,8 +29,14 @@ export const generateFile = async (
   onProgress?: (written: number, total: number) => void,
 ) => {
   const path = `${RNFS.CachesDirectoryPath}/upload-test-${sizeMB}mb.bin`;
-  if (await RNFS.exists(path)) await RNFS.unlink(path);
   const total = sizeMB * 1024 * 1024;
+  if (await RNFS.exists(path)) {
+    const existing = await RNFS.stat(path);
+    if (Number(existing.size) === Math.floor(total / BLOCK_BYTES) * BLOCK_BYTES) {
+      return { path, size: Number(existing.size), md5: await RNFS.hash(path, 'md5') };
+    }
+    await RNFS.unlink(path);
+  }
   const blocks = Math.floor(total / BLOCK_BYTES);
   const base = makeBase();
   for (let i = 0; i < blocks; i++) {
@@ -44,3 +51,5 @@ export const generateFile = async (
 };
 
 export const hashFile = (path: string) => RNFS.hash(path, 'md5');
+
+export const simpleUploadPath = (path: string) => (Platform.OS === 'ios' ? `file://${path}` : path);

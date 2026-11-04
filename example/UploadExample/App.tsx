@@ -10,7 +10,7 @@ import {
   View,
 } from 'react-native';
 import Upload from '@ammarahmed/react-native-upload';
-import { generateFile } from './src/files';
+import { generateFile, simpleUploadPath } from './src/files';
 import { runAll, startBackgroundUpload } from './src/scenarios';
 import { attachBackgroundCompletion } from './src/background';
 import {
@@ -92,7 +92,7 @@ export default function App() {
     setStatus(`simple ${type} uploading`);
     const upload = Upload.create({
       url: type === 'raw' ? rawUrl(base, failure) : formUrl(base, failure),
-      path: `file://${f.path}`,
+      path: simpleUploadPath(f.path),
       method: 'POST',
       type,
       field: type === 'multipart' ? 'file' : undefined,

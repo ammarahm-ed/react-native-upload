@@ -177,14 +177,16 @@ const server = http.createServer(async (req, res) => {
       }
       const delay = Number(q.get('delay') || 0);
       if (delay) await new Promise(r => setTimeout(r, delay));
+      log('s3 proxy', req.method, key, q.get('partNumber') || '');
       return proxyToS3(req, res, url);
     }
 
     if (req.method === 'POST' && url.pathname === '/s3/create') {
       const {base, parts: count, failPart, fail, times, delay} = JSON.parse((await readBody(req)).toString());
       const client = s3ClientFor(base);
+      const internal = s3ClientFor(`http://127.0.0.1:${S3_PORT}`);
       const key = `file-${crypto.randomBytes(6).toString('hex')}.bin`;
-      const created = await client.send(new CreateMultipartUploadCommand({Bucket: BUCKET, Key: key}));
+      const created = await internal.send(new CreateMultipartUploadCommand({Bucket: BUCKET, Key: key}));
       const urls = [];
       for (let i = 1; i <= count; i++) {
         let signed = await getSignedUrl(
