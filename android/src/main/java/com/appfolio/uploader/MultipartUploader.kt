@@ -273,18 +273,12 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
                 resultMap
             }
         } catch (e: CancellationException) {
-            if (context != null) {
-                MultipartUploadService.stop(context)
-            }
             val cancelParams = Arguments.createMap()
             cancelParams.putString("uploadId", uploadId)
             cancelParams.putString("error", "Upload cancelled")
             emitEvent("RNFileUploader-multipart-cancelled", cancelParams)
             throw e
         } catch (e: Exception) {
-            if (context != null) {
-                MultipartUploadService.stop(context)
-            }
             Log.e(TAG, "Multipart upload failed for $uploadId: ${e.message}", e)
             val errorParams = Arguments.createMap()
             errorParams.putString("uploadId", uploadId)
@@ -330,10 +324,6 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
                         try { call.cancel() } catch (_: Exception) {}
                     }
                     uploadJob.job.cancel()
-                    val ctx = reactContext.applicationContext
-                    if (ctx != null) {
-                        MultipartUploadService.stop(ctx)
-                    }
                     throw CancellationException("Upload cancelled: file deleted")
                 }
 
@@ -409,10 +399,6 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
                         try { call.cancel() } catch (_: Exception) {}
                     }
                     uploadJob.job.cancel()
-                    val ctx = reactContext.applicationContext
-                    if (ctx != null) {
-                        MultipartUploadService.stop(ctx)
-                    }
                     throw CancellationException("Upload cancelled: file deleted")
                 }
                 if (e is HttpStatusException && !e.isRetryable) {
@@ -438,11 +424,6 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
             } catch (_: Exception) {}
         }
         uploadJob.job.cancel()
-        activeUploads.remove(uploadJob.uploadId)
-        val context = reactContext.applicationContext
-        if (context != null) {
-            MultipartUploadService.stop(context)
-        }
         return true
     }
 
