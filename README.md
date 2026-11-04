@@ -202,13 +202,63 @@ const upload = Upload.createMultipartS3({
 });
 ```
 
+### Finishing the upload in the background
+
+An S3 multipart upload is only complete once you send `CompleteMultipartUpload` with the part ETags. To make that happen even when the app is suspended, or was killed and restarted for the upload, register a completion handler. Do it at the top level of your entry file (`index.js`), outside of any component, so it exists when the app is started in the background:
+
+```typescript
+import Upload from "@ammarahmed/react-native-upload";
+
+Upload.setMultipartCompletionHandler(async ({ uploadId, status, etags, error }) => {
+  if (status !== "completed") return;
+  // Load whatever you saved when you started the upload (bucket, key, ...)
+  await completeMultipartUpload(uploadId, etags);
+});
+```
+
+- The handler is called when every part has been uploaded (or the upload failed). When it resolves, the upload is acknowledged and its stored state is removed. If it throws, the upload is not acknowledged and stays pending.
+- It is called while the app is running and, on Android, from a headless JS task when the app process was not running. Save what you need to finish the upload (for example the S3 key) to storage before starting it; the headless task starts your JS bundle from scratch.
+- If you use the handler, don't also finish the upload from the `start()` promise.
+- Fallback: completed uploads are persisted natively. If the handler could not run, check on every app launch and finish them without uploading again:
+
+```typescript
+const pending = await Upload.getMultipartS3Uploads();
+for (const upload of pending) {
+  if (upload.status === "completed") {
+    await completeMultipartUpload(upload.uploadId, upload.etags);
+    await Upload.acknowledgeMultipartS3(upload.uploadId);
+  }
+}
+```
+
+`status` is `running`, `completed` or `failed`. A failed upload keeps its `etags`, so you can start it again with `existingEtags`.
+
 ### iOS Background Behavior
 
-Each multipart upload uses its own background `NSURLSession`. Once the app is suspended, only chunks that are already in flight continue to completion; the remaining chunks are queued when the app returns to the foreground. Sessions are not reattached after the app is terminated, so resume with `existingEtags` in that case.
+All multipart uploads share one background `NSURLSession`. Every part is queued when the upload starts, so iOS keeps uploading while the app is suspended and wakes the app when parts finish. Upload state is persisted and reattached when the app is relaunched.
 
-### Android Foreground Service
+Forward the system's background session event to the library in your `AppDelegate`:
 
-Foreground service support for multipart uploads is opt-in. The library does not add any permissions or services to your app. To show an upload notification and keep uploads alive in the background, add the following to your app's `AndroidManifest.xml`:
+```swift
+func application(
+  _ application: UIApplication,
+  handleEventsForBackgroundURLSession identifier: String,
+  completionHandler: @escaping () -> Void
+) {
+  RNFileUploader.setCompletionHandlerWithIdentifier(identifier, completionHandler: completionHandler)
+}
+```
+
+(With Swift, import the library header in your bridging header: `#import <react-native-upload/RNFileUploader.h>`.)
+
+Notes:
+- The system completion handler is released when your JS calls `canSuspendIfBackground()`, which the library calls after the handler runs. Keep the handler short, iOS gives the app limited time when it wakes it.
+- Chunk files are written to a copy in Application Support (or the App Group container when `appGroup` is set) until the upload ends, so you need free space for a second copy of the file.
+- If the user force-quits the app, iOS cancels the background transfers. Resume with `existingEtags`.
+
+### Android Foreground Service and Headless Task
+
+Background support on Android is opt-in. The library does not add any permissions or services to your app. Add the following to your app's `AndroidManifest.xml`:
 
 ```xml
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -220,14 +270,24 @@ Foreground service support for multipart uploads is opt-in. The library does not
     android:name="com.appfolio.uploader.MultipartUploadService"
     android:exported="false"
     android:foregroundServiceType="dataSync" />
+  <service
+    android:name="com.appfolio.uploader.MultipartCompletionService"
+    android:exported="false" />
 </application>
 ```
+
+How it works:
+- Uploads run in a native engine that is independent of your Activity and of the React instance. State (part URLs, ETags, status) is saved to disk after every part.
+- With `notification.enabled` the engine runs a foreground service, which also keeps your JS timers running while the app is in the background.
+- If the system restarts the service after killing the app's process, the engine resumes the remaining parts on its own.
+- When an upload finishes and no React instance is running, `MultipartCompletionService` starts a headless JS task that runs your completion handler.
+- After an upload ends, the service stays alive until the handler resolves (or `Upload.acknowledgeMultipartS3(uploadId)` is called), or for 30 seconds, or 2 minutes if the headless task was started.
 
 Notes:
 - Google Play requires a declaration for `FOREGROUND_SERVICE_DATA_SYNC`.
 - `POST_NOTIFICATIONS` must be requested at runtime on Android 13+ for the notification to appear.
-- The service is only used when `notification.enabled` is `true`, and it is started only while your app is in the foreground. Otherwise the upload runs without a service.
-- When an upload ends, the service stays alive until you call `Upload.acknowledgeMultipartS3(uploadId)` (after you have sent `CompleteMultipartUpload`), or for 30 seconds, whichever comes first.
+- The foreground service is only started while your app is in the foreground. Without it, the process can still be killed by the system, and uploads are then resumed the next time the app starts.
+- A force stop or an OEM that kills the app when it is removed from recents does not restart the service. The persisted uploads resume the next time the app is opened, and completed ones can be finished with `getMultipartS3Uploads()` as shown above.
 - On Android 15+ `dataSync` services have a time limit; the service stops itself when the system times it out.
 - The library compiles against `compileSdkVersion` 35 or higher.
 - Notification texts can be customized with `onProgressTitle`, `onStartMessage`, `onResumeMessage`, `onProgressMessage` (use `{progress}` for the percentage) and `notificationChannelName`.
