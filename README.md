@@ -206,8 +206,30 @@ const upload = Upload.createMultipartS3({
 
 Each multipart upload uses its own background `NSURLSession`. Once the app is suspended, only chunks that are already in flight continue to completion; the remaining chunks are queued when the app returns to the foreground. Sessions are not reattached after the app is terminated, so resume with `existingEtags` in that case.
 
-### Android 14+ Foreground Service
-`@ammarahmed/react-native-upload` automatically declares `FOREGROUND_SERVICE` and `FOREGROUND_SERVICE_DATA_SYNC` permissions along with `MultipartUploadService`. No manual manifest configuration is required in your host application.
+### Android Foreground Service
+
+Foreground service support for multipart uploads is opt-in. The library does not add any permissions or services to your app. To show an upload notification and keep uploads alive in the background, add the following to your app's `AndroidManifest.xml`:
+
+```xml
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+<application>
+  <service
+    android:name="com.appfolio.uploader.MultipartUploadService"
+    android:exported="false"
+    android:foregroundServiceType="dataSync" />
+</application>
+```
+
+Notes:
+- Google Play requires a declaration for `FOREGROUND_SERVICE_DATA_SYNC`.
+- `POST_NOTIFICATIONS` must be requested at runtime on Android 13+ for the notification to appear.
+- The service is only used when `notification.enabled` is `true`, and it is started only while your app is in the foreground. Otherwise the upload runs without a service.
+- On Android 15+ `dataSync` services have a time limit; the service stops itself when the system times it out.
+- The library compiles against `compileSdkVersion` 35 or higher.
+- Notification texts can be customized with `onProgressTitle`, `onStartMessage`, `onResumeMessage`, `onProgressMessage` (use `{progress}` for the percentage) and `notificationChannelName`.
 
 # API
 
