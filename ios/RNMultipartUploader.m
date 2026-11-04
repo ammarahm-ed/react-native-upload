@@ -416,6 +416,32 @@ static NSInteger const MAX_RETRIES = 3;
         return;
     }
 
+    NSString *localPath = filePath;
+    if ([localPath hasPrefix:@"file://"]) {
+        localPath = [localPath substringFromIndex:7];
+    }
+    localPath = [localPath stringByRemovingPercentEncoding] ?: localPath;
+
+    BOOL isDirectory = NO;
+    if (![[NSFileManager defaultManager] fileExistsAtPath:localPath isDirectory:&isDirectory] || isDirectory) {
+        reject(@"INVALID_ARGUMENT", [NSString stringWithFormat:@"File does not exist: %@", localPath], nil);
+        return;
+    }
+
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:localPath error:nil];
+    int64_t fileSize = [attrs[NSFileSize] longLongValue];
+    if (fileSize <= 0) {
+        reject(@"INVALID_ARGUMENT", @"File is empty", nil);
+        return;
+    }
+
+    int64_t partsCount = (int64_t)parts.count;
+    int64_t chunkSize = MAX((int64_t)ceil((double)fileSize / (double)partsCount), MIN_CHUNK_SIZE);
+    if ((partsCount - 1) * chunkSize >= fileSize) {
+        reject(@"INVALID_ARGUMENT", [NSString stringWithFormat:@"File size (%lld bytes) is too small for %lld parts. Each part except the last must be at least %lld bytes.", fileSize, partsCount, (long long)MIN_CHUNK_SIZE], nil);
+        return;
+    }
+
     dispatch_async(self.lockQueue, ^{
         if (self.sessions[uploadId]) {
             reject(@"ALREADY_EXISTS", [NSString stringWithFormat:@"Upload already in progress for %@", uploadId], nil);
