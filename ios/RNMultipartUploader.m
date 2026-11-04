@@ -16,6 +16,7 @@ static NSUInteger const COPY_BLOCK_SIZE = 1024 * 1024;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSURLSessionUploadTask *> *activeTasks;
 @property (nonatomic, strong) NSMutableSet<NSNumber *> *completedChunks;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *retryCounts;
+@property (nonatomic, strong) NSMutableSet<NSNumber *> *pendingRetries;
 @property (nonatomic, strong) NSMutableArray<NSString *> *etags;
 @property (nonatomic, strong) NSURLSession *session;
 @property (nonatomic, copy) RCTPromiseResolveBlock resolve;
@@ -63,6 +64,7 @@ static NSUInteger const COPY_BLOCK_SIZE = 1024 * 1024;
         _activeTasks = [NSMutableDictionary dictionary];
         _completedChunks = [NSMutableSet set];
         _retryCounts = [NSMutableDictionary dictionary];
+        _pendingRetries = [NSMutableSet set];
         _etags = [NSMutableArray arrayWithCapacity:_uploadUrls.count];
         for (NSUInteger i = 0; i < _uploadUrls.count; i++) {
             [_etags addObject:@""];
@@ -146,7 +148,7 @@ static NSUInteger const COPY_BLOCK_SIZE = 1024 * 1024;
         if (self.hasEnded || self.isPaused) return;
         self.isPaused = YES;
         for (NSURLSessionUploadTask *task in self.activeTasks.allValues) {
-            [task suspend];
+            [task cancel];
         }
     });
 }
@@ -155,9 +157,6 @@ static NSUInteger const COPY_BLOCK_SIZE = 1024 * 1024;
     dispatch_async(self.queue, ^{
         if (self.hasEnded || !self.isPaused) return;
         self.isPaused = NO;
-        for (NSURLSessionUploadTask *task in self.activeTasks.allValues) {
-            [task resume];
-        }
         [self uploadNextChunks];
     });
 }
@@ -195,14 +194,14 @@ static NSUInteger const COPY_BLOCK_SIZE = 1024 * 1024;
     while (self.activeTasks.count < (NSUInteger)self.maxParallel) {
         NSInteger nextIndex = -1;
         for (NSInteger i = 0; i < (NSInteger)self.uploadUrls.count; i++) {
-            if (![self.completedChunks containsObject:@(i)] && !self.activeTasks[@(i)]) {
+            if (![self.completedChunks containsObject:@(i)] && !self.activeTasks[@(i)] && ![self.pendingRetries containsObject:@(i)]) {
                 nextIndex = i;
                 break;
             }
         }
 
         if (nextIndex == -1) {
-            if (self.activeTasks.count == 0 && self.completedChunks.count == self.uploadUrls.count) {
+            if (self.activeTasks.count == 0 && self.pendingRetries.count == 0 && self.completedChunks.count == self.uploadUrls.count) {
                 [self finishSuccess];
             }
             return;
@@ -337,6 +336,22 @@ static NSUInteger const COPY_BLOCK_SIZE = 1024 * 1024;
     }
 }
 
+- (void)retryOrFailChunk:(NSInteger)index error:(NSError *)error retryable:(BOOL)retryable {
+    NSInteger retries = [self.retryCounts[@(index)] integerValue];
+    if (!retryable || retries >= MAX_RETRIES) {
+        [self failWithError:error];
+        return;
+    }
+
+    self.retryCounts[@(index)] = @(retries + 1);
+    [self.pendingRetries addObject:@(index)];
+    NSTimeInterval delay = pow(2.0, (double)retries);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), self.queue, ^{
+        [self.pendingRetries removeObject:@(index)];
+        [self uploadNextChunks];
+    });
+}
+
 #pragma mark - NSURLSessionTaskDelegate
 
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
@@ -350,29 +365,20 @@ static NSUInteger const COPY_BLOCK_SIZE = 1024 * 1024;
         [[NSFileManager defaultManager] removeItemAtPath:tempPath error:nil];
 
         if (error) {
-            NSInteger retries = [self.retryCounts[@(index)] integerValue];
-            if (retries < MAX_RETRIES && !self.hasEnded && !self.isPaused) {
-                self.retryCounts[@(index)] = @(retries + 1);
-                [self uploadChunkAtIndex:index];
-                return;
-            } else {
-                [self failWithError:error];
+            if (error.code == NSURLErrorCancelled && self.isPaused) {
                 return;
             }
+            [self retryOrFailChunk:index error:error retryable:YES];
+            return;
         }
 
         NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)task.response;
         if (httpResponse.statusCode < 200 || httpResponse.statusCode >= 300) {
-            NSInteger retries = [self.retryCounts[@(index)] integerValue];
-            if (retries < MAX_RETRIES && !self.hasEnded && !self.isPaused) {
-                self.retryCounts[@(index)] = @(retries + 1);
-                [self uploadChunkAtIndex:index];
-                return;
-            } else {
-                NSString *msg = [NSString stringWithFormat:@"HTTP status %ld on chunk %ld", (long)httpResponse.statusCode, (long)index];
-                [self failWithError:[NSError errorWithDomain:@"RNMultipartUploader" code:httpResponse.statusCode userInfo:@{NSLocalizedDescriptionKey: msg}]];
-                return;
-            }
+            NSInteger status = httpResponse.statusCode;
+            BOOL retryable = status >= 500 || status == 408 || status == 429;
+            NSString *msg = [NSString stringWithFormat:@"HTTP status %ld on chunk %ld", (long)status, (long)index];
+            [self retryOrFailChunk:index error:[NSError errorWithDomain:@"RNMultipartUploader" code:status userInfo:@{NSLocalizedDescriptionKey: msg}] retryable:retryable];
+            return;
         }
 
         NSString *etag = [httpResponse valueForHTTPHeaderField:@"ETag"] ?: @"";
