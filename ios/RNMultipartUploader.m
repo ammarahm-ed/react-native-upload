@@ -24,6 +24,7 @@ static NSUInteger const COPY_BLOCK_SIZE = 1024 * 1024;
 @property (nonatomic, strong) dispatch_queue_t queue;
 @property (nonatomic, assign) BOOL isPaused;
 @property (nonatomic, assign) BOOL hasEnded;
+@property (nonatomic, copy) NSString *tempDirectory;
 
 - (instancetype)initWithOptions:(NSDictionary *)options
                        resolver:(RCTPromiseResolveBlock)resolve
@@ -99,6 +100,16 @@ static NSUInteger const COPY_BLOCK_SIZE = 1024 * 1024;
         NSString *appGroup = options[@"appGroup"];
         if (appGroup && appGroup.length > 0) {
             config.sharedContainerIdentifier = appGroup;
+            NSURL *containerURL = [[NSFileManager defaultManager] containerURLForSecurityApplicationGroupIdentifier:appGroup];
+            if (containerURL) {
+                NSString *dir = [[containerURL path] stringByAppendingPathComponent:@"RNMultipartChunks"];
+                [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+                _tempDirectory = dir;
+            }
+        }
+
+        if (!_tempDirectory) {
+            _tempDirectory = NSTemporaryDirectory();
         }
 
         _session = [NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:nil];
@@ -205,7 +216,7 @@ static NSUInteger const COPY_BLOCK_SIZE = 1024 * 1024;
     int64_t offset = (int64_t)index * self.chunkSize;
     int64_t size = MIN(self.chunkSize, self.totalBytes - offset);
 
-    NSString *tempPath = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"chunk_%@_%ld.tmp", self.uploadId, (long)index]];
+    NSString *tempPath = [self.tempDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"chunk_%@_%ld.tmp", self.uploadId, (long)index]];
 
     NSFileHandle *fileHandle = [NSFileHandle fileHandleForReadingAtPath:self.filePath];
     if (!fileHandle) {
@@ -272,7 +283,7 @@ static NSUInteger const COPY_BLOCK_SIZE = 1024 * 1024;
 - (void)cleanupTempFiles {
     NSFileManager *fm = [NSFileManager defaultManager];
     for (NSInteger i = 0; i < (NSInteger)self.uploadUrls.count; i++) {
-        NSString *tempPath = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"chunk_%@_%ld.tmp", self.uploadId, (long)i]];
+        NSString *tempPath = [self.tempDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"chunk_%@_%ld.tmp", self.uploadId, (long)i]];
         [fm removeItemAtPath:tempPath error:nil];
     }
 }
@@ -335,7 +346,7 @@ static NSUInteger const COPY_BLOCK_SIZE = 1024 * 1024;
         NSInteger index = [task.taskDescription integerValue];
         [self.activeTasks removeObjectForKey:@(index)];
 
-        NSString *tempPath = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"chunk_%@_%ld.tmp", self.uploadId, (long)index]];
+        NSString *tempPath = [self.tempDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"chunk_%@_%ld.tmp", self.uploadId, (long)index]];
         [[NSFileManager defaultManager] removeItemAtPath:tempPath error:nil];
 
         if (error) {
