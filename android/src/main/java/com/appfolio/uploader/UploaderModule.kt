@@ -462,7 +462,11 @@ class UploaderModule(val reactContext: ReactApplicationContext) : ReactContextBa
   }
 
   override fun onHostDestroy() {
+  }
+
+  override fun invalidate() {
     moduleScope.cancel()
+    super.invalidate()
   }
 
   override fun onHostResume() {
