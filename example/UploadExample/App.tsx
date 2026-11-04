@@ -11,7 +11,8 @@ import {
 } from 'react-native';
 import Upload from '@ammarahmed/react-native-upload';
 import { generateFile } from './src/files';
-import { runAll } from './src/scenarios';
+import { runAll, startBackgroundUpload } from './src/scenarios';
+import { attachBackgroundCompletion } from './src/background';
 import {
   Failure,
   completeS3Upload,
@@ -172,10 +173,20 @@ export default function App() {
   }, [base, log]);
 
   useEffect(() => {
+    const report = (line: string) => {
+      log(line);
+      fetch(`${base}/report`, { method: 'POST', body: line }).catch(() => {});
+    };
+    const detach = attachBackgroundCompletion(report);
     fetch(`${base}/autorun`)
       .then(r => r.json())
-      .then(r => r.run && runSuite())
+      .then(r => {
+        if (!r.run) return;
+        if (r.mode === 'bg') startBackgroundUpload(base, report);
+        else runSuite();
+      })
       .catch(() => {});
+    return detach;
   }, []);
 
   const withId = async (name: string, fn: (id: string) => Promise<boolean>) => {
@@ -219,6 +230,19 @@ export default function App() {
 
         <Section title="Automated">
           <Button title="Run all scenarios" onPress={runSuite} />
+        </Section>
+
+        <Section title="Background">
+          <Button
+            title="Start 50 MB background upload"
+            onPress={() =>
+              startBackgroundUpload(base, line => {
+                log(line);
+                fetch(`${base}/report`, { method: 'POST', body: line }).catch(() => {});
+              })
+            }
+          />
+          <Text style={styles.hint}>Slow parts (6s each). Send the app to the background; it finalizes itself.</Text>
         </Section>
 
         <Section title="Simple upload">

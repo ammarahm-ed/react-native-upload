@@ -1,6 +1,7 @@
 import Upload from '@ammarahmed/react-native-upload';
 import { completeS3Upload, createS3Upload, formUrl, rawUrl, Failure } from './api';
 import { generateFile } from './files';
+import { saveSession } from './background';
 
 type Result = { name: string; ok: boolean; detail: string };
 type File = { path: string; size: number; md5: string };
@@ -221,4 +222,20 @@ export const runAll = async (
   const passed = results.filter(r => r.ok).length;
   report(`DONE ${passed}/${results.length} passed`);
   return results;
+};
+
+export const startBackgroundUpload = async (base: string, report: (line: string) => void) => {
+  const file = await generateFile(50);
+  report(`bg file ${file.size} bytes md5 ${file.md5}`);
+  const session = await createS3Upload(base, 5, null, 1, 6000);
+  await saveSession({ base, session, md5: file.md5 });
+  report(`bg upload ${session.uploadId} starting, send the app to background now`);
+  Upload.createMultipartS3({
+    uploadId: session.uploadId,
+    path: file.path,
+    parts: session.urls,
+    maxParallel: 3,
+  })
+    .start()
+    .catch(e => report(`bg upload error ${e.code} ${e.message}`));
 };

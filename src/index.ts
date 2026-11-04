@@ -178,6 +178,18 @@ export interface MultipartProgressEvent {
   errorMessage?: string;
 }
 
+export type MultipartUploadStatus = "running" | "paused" | "completed" | "failed";
+
+export interface MultipartPendingUpload {
+  uploadId: string;
+  status: MultipartUploadStatus;
+  progress: number;
+  bytesUploaded: number;
+  totalBytes: number;
+  etags: string[];
+  error: string | null;
+}
+
 export interface MultipartS3Result {
   uploadId: string;
   success: boolean;
@@ -372,6 +384,21 @@ class Upload {
    */
   static resumeMultipartS3(uploadId: string): Promise<boolean> {
     return MultipartS3Upload.resume(uploadId);
+  }
+
+  /**
+   * Lists multipart uploads known to the native side, including ones that
+   * finished while the app was suspended or relaunched in the background.
+   */
+  static getMultipartS3Uploads(): Promise<MultipartPendingUpload[]> {
+    return NativeModule.getMultipartUploads();
+  }
+
+  /**
+   * Removes the stored state of a completed or failed multipart upload.
+   */
+  static acknowledgeMultipartS3(uploadId: string): Promise<boolean> {
+    return NativeModule.acknowledgeMultipartUpload(uploadId);
   }
 
   /**
@@ -765,6 +792,12 @@ export const pauseMultipartS3 = (uploadId: string): Promise<boolean> =>
 
 export const resumeMultipartS3 = (uploadId: string): Promise<boolean> =>
   Upload.resumeMultipartS3(uploadId);
+
+export const getMultipartS3Uploads = (): Promise<MultipartPendingUpload[]> =>
+  Upload.getMultipartS3Uploads();
+
+export const acknowledgeMultipartS3 = (uploadId: string): Promise<boolean> =>
+  Upload.acknowledgeMultipartS3(uploadId);
 
 export const addMultipartListener = (
   eventType: MultipartEventType,

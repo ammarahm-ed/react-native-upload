@@ -151,6 +151,16 @@ export interface MultipartProgressEvent {
     etags?: string[];
     errorMessage?: string;
 }
+export type MultipartUploadStatus = "running" | "paused" | "completed" | "failed";
+export interface MultipartPendingUpload {
+    uploadId: string;
+    status: MultipartUploadStatus;
+    progress: number;
+    bytesUploaded: number;
+    totalBytes: number;
+    etags: string[];
+    error: string | null;
+}
 export interface MultipartS3Result {
     uploadId: string;
     success: boolean;
@@ -225,6 +235,15 @@ declare class Upload {
      */
     static resumeMultipartS3(uploadId: string): Promise<boolean>;
     /**
+     * Lists multipart uploads known to the native side, including ones that
+     * finished while the app was suspended or relaunched in the background.
+     */
+    static getMultipartS3Uploads(): Promise<MultipartPendingUpload[]>;
+    /**
+     * Removes the stored state of a completed or failed multipart upload.
+     */
+    static acknowledgeMultipartS3(uploadId: string): Promise<boolean>;
+    /**
      * Add listener for multipart events
      */
     static addMultipartListener(eventType: MultipartEventType, uploadId: string, listener: (data: any) => void): EmitterSubscription;
@@ -292,6 +311,8 @@ export declare const startMultipartS3: (options: MultipartS3Options) => Promise<
 export declare const cancelMultipartS3: (uploadId: string) => Promise<boolean>;
 export declare const pauseMultipartS3: (uploadId: string) => Promise<boolean>;
 export declare const resumeMultipartS3: (uploadId: string) => Promise<boolean>;
+export declare const getMultipartS3Uploads: () => Promise<MultipartPendingUpload[]>;
+export declare const acknowledgeMultipartS3: (uploadId: string) => Promise<boolean>;
 export declare const addMultipartListener: (eventType: MultipartEventType, uploadId: string, listener: (data: any) => void) => EmitterSubscription;
 export declare const getFileInfo: (path: string) => Promise<FileInfo>;
 export declare const startUpload: (options: UploadOptions) => Promise<string>;

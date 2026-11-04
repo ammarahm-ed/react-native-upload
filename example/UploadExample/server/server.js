@@ -116,7 +116,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (req.method === 'GET' && url.pathname === '/autorun') {
-      return json(res, 200, {run: process.env.AUTORUN === '1'});
+      return json(res, 200, {run: !!process.env.AUTORUN, mode: process.env.AUTORUN});
     }
 
     if (req.method === 'POST' && url.pathname === '/report') {

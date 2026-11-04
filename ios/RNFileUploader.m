@@ -52,6 +52,10 @@ BOOL limitNetwork = NO;
 }
 
 - (void)startObserving {
+    [[RNMultipartUploader sharedInstance] setEventEmitter:^(NSString *eventName, id body) {
+        [self _sendEventWithName:eventName body:body];
+    }];
+    [[RNMultipartUploader sharedInstance] restore];
     // JS side is ready to receive events; create the background url session if
     // necessary iOS will then deliver the tasks completed while the app was
     // dead (if any)
@@ -68,6 +72,8 @@ BOOL limitNetwork = NO;
                          completionHandler:(void (^)())completionHandler {
     if ([BACKGROUND_SESSION_ID isEqualToString:identifier]) {
         backgroundSessionCompletionHandler = completionHandler;
+    } else if ([[RNMultipartUploader sessionIdentifier] isEqualToString:identifier]) {
+        [[RNMultipartUploader sharedInstance] setBackgroundCompletionHandler:completionHandler];
     }
 }
 
@@ -319,6 +325,7 @@ RCT_EXPORT_METHOD(cancelUpload : (NSString *)cancelUploadId resolve : (
 }
 
 RCT_EXPORT_METHOD(canSuspendIfBackground) {
+    [[RNMultipartUploader sharedInstance] finishBackgroundEvents];
     if (backgroundSessionCompletionHandler) {
         backgroundSessionCompletionHandler();
         backgroundSessionCompletionHandler = nil;
@@ -580,10 +587,18 @@ RCT_EXPORT_METHOD(startMultipartUpload:(NSDictionary *)options
                   rejecter:(RCTPromiseRejectBlock)reject) {
     [[RNMultipartUploader sharedInstance] startUploadWithOptions:options
                                                         resolver:resolve
-                                                        rejecter:reject
-                                                    eventEmitter:^(NSString *eventName, id body) {
-        [self _sendEventWithName:eventName body:body];
-    }];
+                                                        rejecter:reject];
+}
+
+RCT_EXPORT_METHOD(getMultipartUploads:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+    resolve([[RNMultipartUploader sharedInstance] pendingUploads]);
+}
+
+RCT_EXPORT_METHOD(acknowledgeMultipartUpload:(NSString *)uploadId
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+    resolve(@([[RNMultipartUploader sharedInstance] acknowledgeUpload:uploadId]));
 }
 
 RCT_EXPORT_METHOD(cancelMultipartUpload:(NSString *)uploadId

@@ -428,6 +428,16 @@ class UploaderModule(val reactContext: ReactApplicationContext) : ReactContextBa
   }
 
   @ReactMethod
+  fun getMultipartUploads(promise: Promise) {
+    promise.resolve(Arguments.createArray())
+  }
+
+  @ReactMethod
+  fun acknowledgeMultipartUpload(uploadId: String, promise: Promise) {
+    promise.resolve(false)
+  }
+
+  @ReactMethod
   fun pauseMultipartUpload(uploadId: String, promise: Promise) {
     try {
       val success = multipartUploader.pauseUpload(uploadId)

@@ -193,6 +193,19 @@ var Upload = /** @class */ (function () {
         return MultipartS3Upload.resume(uploadId);
     };
     /**
+     * Lists multipart uploads known to the native side, including ones that
+     * finished while the app was suspended or relaunched in the background.
+     */
+    Upload.getMultipartS3Uploads = function () {
+        return NativeModule.getMultipartUploads();
+    };
+    /**
+     * Removes the stored state of a completed or failed multipart upload.
+     */
+    Upload.acknowledgeMultipartS3 = function (uploadId) {
+        return NativeModule.acknowledgeMultipartUpload(uploadId);
+    };
+    /**
      * Add listener for multipart events
      */
     Upload.addMultipartListener = function (eventType, uploadId, listener) {
@@ -580,6 +593,12 @@ export var pauseMultipartS3 = function (uploadId) {
 };
 export var resumeMultipartS3 = function (uploadId) {
     return Upload.resumeMultipartS3(uploadId);
+};
+export var getMultipartS3Uploads = function () {
+    return Upload.getMultipartS3Uploads();
+};
+export var acknowledgeMultipartS3 = function (uploadId) {
+    return Upload.acknowledgeMultipartS3(uploadId);
 };
 export var addMultipartListener = function (eventType, uploadId, listener) {
     return Upload.addMultipartListener(eventType, uploadId, listener);
