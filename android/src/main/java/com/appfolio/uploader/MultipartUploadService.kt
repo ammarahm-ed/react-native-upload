@@ -24,11 +24,9 @@ class MultipartUploadService : Service() {
 
         const val ACTION_START = "com.appfolio.uploader.START_FOREGROUND_UPLOAD"
         const val ACTION_STOP = "com.appfolio.uploader.STOP_FOREGROUND_UPLOAD"
-        const val ACTION_UPDATE = "com.appfolio.uploader.UPDATE_FOREGROUND_UPLOAD"
 
         const val EXTRA_TITLE = "extra_title"
         const val EXTRA_MESSAGE = "extra_message"
-        const val EXTRA_PROGRESS = "extra_progress"
 
         fun start(context: Context, title: String, message: String) {
             try {
@@ -50,14 +48,11 @@ class MultipartUploadService : Service() {
         }
 
         fun updateProgress(context: Context, title: String, progress: Int, message: String) {
+            if (instance == null) return
             try {
-                val intent = Intent(context, MultipartUploadService::class.java).apply {
-                    action = ACTION_UPDATE
-                    putExtra(EXTRA_TITLE, title)
-                    putExtra(EXTRA_PROGRESS, progress)
-                    putExtra(EXTRA_MESSAGE, message)
-                }
-                context.startService(intent)
+                val notification = buildNotification(context, title, progress, message, ongoing = true)
+                val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                manager?.notify(NOTIFICATION_ID, notification)
             } catch (e: Exception) {
                 Log.w(TAG, "Could not update progress: ${e.message}")
             }
@@ -65,20 +60,30 @@ class MultipartUploadService : Service() {
 
         fun stop(context: Context) {
             try {
-                // Instantly dismiss foreground notification and stop service if running in-process
                 instance?.stopForegroundAndSelf()
-
-                // Also directly cancel the notification ID immediately
                 val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 notificationManager?.cancel(NOTIFICATION_ID)
-
-                val intent = Intent(context, MultipartUploadService::class.java).apply {
-                    action = ACTION_STOP
-                }
-                context.startService(intent)
             } catch (e: Exception) {
                 Log.w(TAG, "Could not stop MultipartUploadService: ${e.message}")
             }
+        }
+
+        private fun buildNotification(context: Context, title: String, progress: Int, message: String, ongoing: Boolean): Notification {
+            val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setContentTitle(title)
+                .setContentText(message)
+                .setSmallIcon(android.R.drawable.stat_sys_upload)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOngoing(ongoing)
+                .setAutoCancel(!ongoing)
+
+            if (progress in 0..100) {
+                builder.setProgress(100, progress, false)
+            } else {
+                builder.setProgress(0, 0, true)
+            }
+
+            return builder.build()
         }
     }
 
@@ -112,14 +117,6 @@ class MultipartUploadService : Service() {
                     stopSelf()
                 }
             }
-            ACTION_UPDATE -> {
-                if (isStarted) {
-                    val title = intent.getStringExtra(EXTRA_TITLE) ?: "Uploading..."
-                    val progress = intent.getIntExtra(EXTRA_PROGRESS, 0)
-                    val message = intent.getStringExtra(EXTRA_MESSAGE) ?: "Uploading..."
-                    updateNotification(title, progress, message)
-                }
-            }
             ACTION_STOP -> {
                 stopForegroundAndSelf()
             }
@@ -128,36 +125,13 @@ class MultipartUploadService : Service() {
     }
 
     private fun startForegroundWithNotification(title: String, progress: Int, message: String) {
-        val notification = buildNotification(title, progress, message, ongoing = true)
+        val notification = buildNotification(this, title, progress, message, ongoing = true)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
         isStarted = true
-    }
-
-    private fun updateNotification(title: String, progress: Int, message: String) {
-        val notification = buildNotification(title, progress, message, ongoing = true)
-        notificationManager?.notify(NOTIFICATION_ID, notification)
-    }
-
-    private fun buildNotification(title: String, progress: Int, message: String, ongoing: Boolean): Notification {
-        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(title)
-            .setContentText(message)
-            .setSmallIcon(android.R.drawable.stat_sys_upload)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setOngoing(ongoing)
-            .setAutoCancel(!ongoing)
-
-        if (progress in 0..100) {
-            builder.setProgress(100, progress, false)
-        } else {
-            builder.setProgress(0, 0, true)
-        }
-
-        return builder.build()
     }
 
     fun stopForegroundAndSelf() {
