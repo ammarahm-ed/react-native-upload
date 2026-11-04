@@ -10,9 +10,12 @@ import kotlinx.coroutines.sync.withPermit
 import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
+import okhttp3.MediaType
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.RequestBody
+import okio.BufferedSink
 import java.io.File
+import java.io.IOException
 import java.io.RandomAccessFile
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -24,6 +27,36 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
         private const val TAG = "MultipartUploader"
         private const val MIN_CHUNK_SIZE = 5L * 1024 * 1024 // 5MB minimum for S3
         private const val MAX_RETRIES = 3
+    }
+
+    private class FileRegionBody(
+        private val file: File,
+        private val offset: Long,
+        private val size: Long,
+        private val mediaType: MediaType?
+    ) : RequestBody() {
+        override fun contentType(): MediaType? = mediaType
+
+        override fun contentLength(): Long = size
+
+        override fun writeTo(sink: BufferedSink) {
+            RandomAccessFile(file, "r").use { raf ->
+                if (offset + size > raf.length()) {
+                    throw IllegalArgumentException("Invalid chunk bounds: offset=$offset, size=$size, file=${raf.length()}")
+                }
+                raf.seek(offset)
+                val buffer = ByteArray(64 * 1024)
+                var remaining = size
+                while (remaining > 0) {
+                    val read = raf.read(buffer, 0, Math.min(buffer.size.toLong(), remaining).toInt())
+                    if (read < 0) {
+                        throw IOException("Unexpected end of file while reading chunk")
+                    }
+                    sink.write(buffer, 0, read)
+                    remaining -= read
+                }
+            }
+        }
     }
 
     private data class PartInfo(
@@ -299,15 +332,12 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
                     throw CancellationException("Upload cancelled: file deleted")
                 }
 
-                val chunkData = readChunk(file, part.offset, part.size)
                 val mediaType = "application/octet-stream".toMediaTypeOrNull()
-                val requestBody = chunkData.toRequestBody(mediaType)
+                val requestBody = FileRegionBody(file, part.offset, part.size, mediaType)
 
                 val request = Request.Builder()
                     .url(part.url)
                     .put(requestBody)
-                    .addHeader("Content-Type", "application/octet-stream")
-                    .addHeader("Content-Length", part.size.toString())
                     .build()
 
                 val call = httpClient.newCall(request)
@@ -390,21 +420,6 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
         }
 
         throw lastError ?: Exception("Part ${part.partNumber} failed after $MAX_RETRIES retries")
-    }
-
-    private fun readChunk(file: File, offset: Long, size: Long): ByteArray {
-        RandomAccessFile(file, "r").use { raf ->
-            if (offset + size > raf.length()) {
-                throw IllegalArgumentException("Invalid chunk bounds: offset=$offset, size=$size, file=${raf.length()}")
-            }
-            raf.seek(offset)
-            val buffer = ByteArray(size.toInt())
-            val bytesRead = raf.read(buffer)
-            if (bytesRead != size.toInt()) {
-                throw Exception("Read $bytesRead bytes, expected $size")
-            }
-            return buffer
-        }
     }
 
     fun cancelUpload(uploadIdOrKey: String): Boolean {
