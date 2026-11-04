@@ -332,30 +332,35 @@ RCT_EXPORT_METHOD(getAllUploads : (RCTPromiseResolveBlock)
             NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
           NSMutableArray *uploads = [NSMutableArray new];
           for (NSURLSessionUploadTask *uploadTask in uploadTasks) {
-              NSString *state = @"unknown"; // Default initialization
-              switch (uploadTask.state) {
-              case NSURLSessionTaskStateRunning:
-                  state = @"running";
-                  break;
-              case NSURLSessionTaskStateSuspended:
-                  state = @"pending";
-                  break;
-              case NSURLSessionTaskStateCanceling:
-                  state = @"cancelled";
-                  break;
-              case NSURLSessionTaskStateCompleted:
-                  state = @"completed";
-                  break;
-              default: // Handle unexpected states
-                  state = @"unknown";
-                  break;
-              }
+              @try {
+                  NSString *state = @"unknown"; // Default initialization
+                  switch (uploadTask.state) {
+                  case NSURLSessionTaskStateRunning:
+                      state = @"running";
+                      break;
+                  case NSURLSessionTaskStateSuspended:
+                      state = @"pending";
+                      break;
+                  case NSURLSessionTaskStateCanceling:
+                      state = @"cancelled";
+                      break;
+                  case NSURLSessionTaskStateCompleted:
+                      state = @"completed";
+                      break;
+                  default: // Handle unexpected states
+                      state = @"unknown";
+                      break;
+                  }
 
-              NSDictionary *upload = @{
-                  @"id" : uploadTask.taskDescription ?: @"", // Null safety
-                  @"state" : state
-              };
-              [uploads addObject:upload];
+                  NSDictionary *upload = @{
+                      @"id" : uploadTask.taskDescription ?: @"", // Null safety
+                      @"state" : state
+                  };
+                  [uploads addObject:upload];
+              } @catch (NSException *exception) {
+                  NSDictionary *upload = @{ @"id" : @"", @"state" : @"unknown" };
+                  [uploads addObject:upload];
+              }
           }
           resolve(uploads);
         }];
