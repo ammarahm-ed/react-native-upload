@@ -375,7 +375,7 @@ static NSUInteger const COPY_BLOCK_SIZE = 1024 * 1024;
             }
         }
 
-        NSString *etag = httpResponse.allHeaderFields[@"ETag"] ?: httpResponse.allHeaderFields[@"Etag"] ?: httpResponse.allHeaderFields[@"etag"] ?: @"";
+        NSString *etag = [httpResponse valueForHTTPHeaderField:@"ETag"] ?: @"";
         etag = [etag stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\""]];
 
         if (etag.length == 0) {
