@@ -202,6 +202,10 @@ const upload = Upload.createMultipartS3({
 });
 ```
 
+### iOS Background Behavior
+
+Each multipart upload uses its own background `NSURLSession`. Once the app is suspended, only chunks that are already in flight continue to completion; the remaining chunks are queued when the app returns to the foreground. Sessions are not reattached after the app is terminated, so resume with `existingEtags` in that case.
+
 ### Android 14+ Foreground Service
 `@ammarahmed/react-native-upload` automatically declares `FOREGROUND_SERVICE` and `FOREGROUND_SERVICE_DATA_SYNC` permissions along with `MultipartUploadService`. No manual manifest configuration is required in your host application.
 
