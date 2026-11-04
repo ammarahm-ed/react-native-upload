@@ -48,7 +48,7 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
 /**
  * Handles HTTP background file uploads from an iOS or Android device.
  */
-import { NativeModules, DeviceEventEmitter, Platform, } from 'react-native';
+import { AppRegistry, NativeModules, DeviceEventEmitter, Platform, } from 'react-native';
 var NativeModule = NativeModules.RNFileUploader;
 var eventPrefix = 'RNFileUploader-';
 // for IOS, register event listeners or else they don't fire on DeviceEventEmitter
@@ -61,6 +61,9 @@ if (NativeModules.RNFileUploader && NativeModule.addListener) {
     NativeModule.addListener(eventPrefix + 'multipart-error');
     NativeModule.addListener(eventPrefix + 'multipart-cancelled');
     NativeModule.addListener(eventPrefix + 'multipart-completed');
+}
+if (Platform.OS === 'android') {
+    AppRegistry.registerHeadlessTask('RNMultipartUploadKeepAlive', function () { return function () { return new Promise(function () { }); }; });
 }
 export var UploadState = {
     Cancelled: 'cancelled',

@@ -2,6 +2,7 @@
  * Handles HTTP background file uploads from an iOS or Android device.
  */
 import {
+  AppRegistry,
   NativeModules,
   DeviceEventEmitter,
   Platform,
@@ -221,6 +222,13 @@ if (NativeModules.RNFileUploader && NativeModule.addListener) {
   NativeModule.addListener(eventPrefix + 'multipart-error');
   NativeModule.addListener(eventPrefix + 'multipart-cancelled');
   NativeModule.addListener(eventPrefix + 'multipart-completed');
+}
+
+if (Platform.OS === 'android') {
+  AppRegistry.registerHeadlessTask(
+    'RNMultipartUploadKeepAlive',
+    () => () => new Promise<void>(() => {}),
+  );
 }
 
 export const UploadState = {

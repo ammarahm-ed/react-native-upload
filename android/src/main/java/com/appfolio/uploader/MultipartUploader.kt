@@ -3,6 +3,8 @@ package com.appfolio.uploader
 import android.content.Context
 import android.util.Log
 import com.facebook.react.bridge.*
+import com.facebook.react.jstasks.HeadlessJsTaskConfig
+import com.facebook.react.jstasks.HeadlessJsTaskContext
 import com.facebook.react.modules.core.DeviceEventManagerModule.RCTDeviceEventEmitter
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
@@ -30,6 +32,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
         private const val MIN_CHUNK_SIZE = 5L * 1024 * 1024 // 5MB minimum for S3
         private const val MAX_RETRIES = 3
         private const val ACK_GRACE_MS = 30_000L
+        private const val KEEP_ALIVE_TASK = "RNMultipartUploadKeepAlive"
     }
 
     private class HttpStatusException(val code: Int, message: String) : Exception(message) {
@@ -101,8 +104,32 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
     private val awaitingAck = ConcurrentHashMap<String, Job>()
     private val ackScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    private val keepAliveLock = Any()
+    private var keepAliveTaskId: Int? = null
+
+    private fun acquireJsKeepAlive() {
+        UiThreadUtil.runOnUiThread {
+            synchronized(keepAliveLock) {
+                if (keepAliveTaskId != null || !reactContext.hasActiveReactInstance()) return@runOnUiThread
+                val config = HeadlessJsTaskConfig(KEEP_ALIVE_TASK, Arguments.createMap(), 0, true)
+                keepAliveTaskId = HeadlessJsTaskContext.getInstance(reactContext).startTask(config)
+            }
+        }
+    }
+
+    private fun releaseJsKeepAlive() {
+        UiThreadUtil.runOnUiThread {
+            synchronized(keepAliveLock) {
+                val taskId = keepAliveTaskId ?: return@runOnUiThread
+                keepAliveTaskId = null
+                HeadlessJsTaskContext.getInstance(reactContext).finishTask(taskId)
+            }
+        }
+    }
+
     private fun stopServiceIfIdle() {
         if (activeUploads.isEmpty() && awaitingAck.isEmpty()) {
+            releaseJsKeepAlive()
             reactContext.applicationContext?.let { MultipartUploadService.stop(it) }
         }
     }
@@ -235,6 +262,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
             throw UploadAlreadyExistsException("Upload already in progress for $uploadId")
         }
         awaitingAck.remove(uploadId)?.cancel()
+        acquireJsKeepAlive()
 
         val context: Context? = reactContext.applicationContext
         if (context != null && showNotification) {
