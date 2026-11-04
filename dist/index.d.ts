@@ -151,6 +151,14 @@ export interface MultipartS3Options {
      * Already uploaded chunks will be skipped and pre-filled with these ETags.
      */
     existingEtags?: string[];
+    /**
+     * Whether the upload can survive the app process being killed (default: true).
+     * Resumable uploads are persisted natively, resumed after a restart and can
+     * be finished later through getMultipartS3Uploads. When false, the upload
+     * still keeps running while the app is in the background but nothing is
+     * persisted, so it is gone if the app process dies.
+     */
+    resumable?: boolean;
 }
 export interface MultipartProgressEvent {
     type: string;

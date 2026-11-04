@@ -183,6 +183,7 @@ export default function App() {
       .then(r => {
         if (!r.run) return;
         if (r.mode === 'bg') startBackgroundUpload(base, report);
+        else if (r.mode === 'bg-nonresumable') startBackgroundUpload(base, report, false);
         else runSuite();
       })
       .catch(() => {});

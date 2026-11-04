@@ -58,7 +58,8 @@ data class UploadParams(
     val resumeMessage: String,
     val progressMessage: String,
     val channelName: String,
-    val existingEtags: List<String>
+    val existingEtags: List<String>,
+    val resumable: Boolean = true
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("uploadId", uploadId)
@@ -71,6 +72,7 @@ data class UploadParams(
         put("resumeMessage", resumeMessage)
         put("progressMessage", progressMessage)
         put("channelName", channelName)
+        put("resumable", resumable)
     }
 
     companion object {
@@ -87,7 +89,8 @@ data class UploadParams(
                 resumeMessage = json.getString("resumeMessage"),
                 progressMessage = json.getString("progressMessage"),
                 channelName = json.getString("channelName"),
-                existingEtags = existingEtags
+                existingEtags = existingEtags,
+                resumable = json.optBoolean("resumable", true)
             )
         }
 
@@ -139,7 +142,8 @@ data class UploadParams(
                 resumeMessage = text("onResumeMessage", "Resuming upload..."),
                 progressMessage = text("onProgressMessage", "Uploading... {progress}%"),
                 channelName = text("notificationChannelName", "Background Upload Channel"),
-                existingEtags = existing
+                existingEtags = existing,
+                resumable = !(options.hasKey("resumable") && options.getType("resumable") == ReadableType.Boolean && !options.getBoolean("resumable"))
             )
         }
     }
@@ -401,7 +405,7 @@ class MultipartUploader private constructor(private val appContext: Context) {
         synchronized(stateLock) {
             try {
                 val array = JSONArray()
-                records.values.forEach { record ->
+                records.values.filter { it.params.resumable }.forEach { record ->
                     array.put(JSONObject().apply {
                         put("params", record.params.toJson())
                         put("totalBytes", record.totalBytes)

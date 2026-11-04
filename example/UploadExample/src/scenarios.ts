@@ -235,7 +235,11 @@ export const runAll = async (
   return results;
 };
 
-export const startBackgroundUpload = async (base: string, report: (line: string) => void | Promise<void>) => {
+export const startBackgroundUpload = async (
+  base: string,
+  report: (line: string) => void | Promise<void>,
+  resumable = true,
+) => {
   const file = await generateFile(50);
   report(`bg file ${file.size} bytes md5 ${file.md5}`);
   const session = await createS3Upload(base, 5, null, 1, 6000);
@@ -247,6 +251,7 @@ export const startBackgroundUpload = async (base: string, report: (line: string)
     parts: session.urls,
     maxParallel: 3,
     notification: { enabled: true, onProgressTitle: 'Background upload' },
+    resumable,
   })
     .start()
     .catch(e => report(`bg upload error ${e.code} ${e.message}`));

@@ -18,6 +18,7 @@ static NSString *const STATUS_FAILED = @"failed";
 @property (nonatomic, copy) NSString *appGroup;
 @property (nonatomic, copy) NSString *status;
 @property (nonatomic, copy) NSString *errorMessage;
+@property (nonatomic, assign) BOOL resumable;
 @property (nonatomic, copy) NSArray<NSString *> *urls;
 @property (nonatomic, assign) NSInteger maxParallel;
 @property (nonatomic, assign) int64_t totalBytes;
@@ -191,6 +192,7 @@ static NSString *const STATUS_FAILED = @"failed";
 - (void)persist {
     NSMutableArray *entries = [NSMutableArray array];
     for (RNMultipartSession *s in self.sessions.allValues) {
+        if (!s.resumable) continue;
         [entries addObject:@{
             @"uploadId": s.uploadId,
             @"path": s.filePath,
@@ -215,10 +217,8 @@ static NSString *const STATUS_FAILED = @"failed";
 
     NSData *data = [NSData dataWithContentsOfFile:[self stateFilePath]];
     NSArray *entries = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-    if (![entries isKindOfClass:[NSArray class]] || entries.count == 0) {
-        self.tasksLoaded = YES;
-        [self finishBackgroundEvents];
-        return;
+    if (![entries isKindOfClass:[NSArray class]]) {
+        entries = @[];
     }
 
     for (NSDictionary *e in entries) {
@@ -234,11 +234,14 @@ static NSString *const STATUS_FAILED = @"failed";
         s.errorMessage = [e[@"error"] length] > 0 ? e[@"error"] : nil;
         s.tempDirectory = e[@"tempDirectory"];
         s.appGroup = e[@"appGroup"];
+        s.resumable = YES;
         self.sessions[s.uploadId] = s;
     }
 
+    [self removeOrphanChunkFiles];
+
     RNMultipartSession *first = self.sessions.allValues.firstObject;
-    NSURLSession *session = [self sessionForAppGroup:first.appGroup maxParallel:first.maxParallel];
+    NSURLSession *session = [self sessionForAppGroup:first.appGroup maxParallel:first.maxParallel > 0 ? first.maxParallel : 3];
     [session getTasksWithCompletionHandler:^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
         dispatch_async(self.queue, ^{
             for (NSURLSessionUploadTask *task in uploadTasks) {
@@ -256,12 +259,35 @@ static NSString *const STATUS_FAILED = @"failed";
                 s.activeTasks[@(index)] = task;
             }
             self.tasksLoaded = YES;
+            if (self.sessions.count == 0) {
+                [self finishBackgroundEvents];
+            }
             if (self.finishEventsPending) {
                 self.finishEventsPending = NO;
                 [self enqueueRunningSessions];
             }
         });
     }];
+}
+
+- (void)removeOrphanChunkFiles {
+    NSMutableSet<NSString *> *directories = [NSMutableSet setWithObject:[self chunkDirectoryForAppGroup:nil]];
+    for (RNMultipartSession *s in self.sessions.allValues) {
+        if (s.tempDirectory) [directories addObject:s.tempDirectory];
+    }
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *directory in directories) {
+        for (NSString *name in [fm contentsOfDirectoryAtPath:directory error:nil]) {
+            if (![name hasPrefix:@"chunk_"] || ![name hasSuffix:@".tmp"]) continue;
+            NSString *body = [name substringWithRange:NSMakeRange(6, name.length - 10)];
+            NSRange separator = [body rangeOfString:@"_" options:NSBackwardsSearch];
+            if (separator.location == NSNotFound) continue;
+            NSString *uploadId = [body substringToIndex:separator.location];
+            if (!self.sessions[uploadId]) {
+                [fm removeItemAtPath:[directory stringByAppendingPathComponent:name] error:nil];
+            }
+        }
+    }
 }
 
 - (void)restore {
@@ -380,6 +406,7 @@ static NSString *const STATUS_FAILED = @"failed";
         session.appGroup = appGroup;
         session.tempDirectory = [self chunkDirectoryForAppGroup:appGroup];
         session.status = STATUS_RUNNING;
+        session.resumable = options[@"resumable"] == nil ? YES : [options[@"resumable"] boolValue];
         session.resolve = resolve;
         session.reject = reject;
         session.etags = [NSMutableArray arrayWithCapacity:parts.count];

@@ -202,6 +202,19 @@ const upload = Upload.createMultipartS3({
 });
 ```
 
+### Disabling resumability
+
+Uploads are resumable by default: their state is persisted so that they survive the app process being killed. Pass `resumable: false` to an individual upload to turn that off:
+
+```typescript
+Upload.createMultipartS3({ uploadId, path, parts, resumable: false });
+```
+
+A non-resumable upload still keeps running while the app is in the background, but nothing is written to disk. If the app process dies and the app is launched again, the upload is not resumed and does not show up in `getMultipartS3Uploads()`.
+
+- Android: the foreground service is not restarted for it and no headless completion runs after a process death.
+- iOS: iOS may keep sending parts that were already queued while the app is dead. On the next launch the library cancels them and deletes their chunk files. The multipart upload is never completed, so abort it on your server if needed.
+
 ### Finishing the upload in the background
 
 An S3 multipart upload is only complete once you send `CompleteMultipartUpload` with the part ETags. To make that happen even when the app is suspended, or was killed and restarted for the upload, register a completion handler. Do it at the top level of your entry file (`index.js`), outside of any component, so it exists when the app is started in the background:
