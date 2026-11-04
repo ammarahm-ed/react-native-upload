@@ -66,7 +66,7 @@ class MultipartUploader(private val reactContext: ReactApplicationContext) {
         }
     }
 
-    private class NotificationTexts(map: ReadableMap?, filename: String) {
+    private class NotificationTexts(private val map: ReadableMap?, filename: String) {
         private fun string(key: String, default: String): String =
             if (map != null && map.hasKey(key) && map.getType(key) == ReadableType.String) map.getString(key) ?: default else default
 

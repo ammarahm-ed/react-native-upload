@@ -30,6 +30,7 @@ const runMultipart = async (
     parts: session.urls,
     maxParallel: opts.maxParallel ?? 3,
     existingEtags: opts.existingEtags,
+    notification: { enabled: true, onProgressTitle: 'Example upload' },
   });
   let etags: string[] = opts.existingEtags ?? [];
   upload.onProgress(e => {
