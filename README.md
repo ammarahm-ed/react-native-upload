@@ -82,6 +82,15 @@ No further actions required.
 
 To use this library with [Expo](https://expo.io) one must first detach (eject) the project and follow [step 2](#2-link-native-code) instructions. Additionally on iOS there is a must to add a Header Search Path to other dependencies which are managed using Pods. To do so one has to add `$(SRCROOT)/../../../ios/Pods/Headers/Public` to Header Search Path in `VydiaRNFileUploader` module using XCode.
 
+## 4. Desktop (react-native-gpui)
+
+On desktop the library runs on [react-native-gpui](https://github.com/streetwriters/react-native-gpui) with a native Rust module in `desktop/`. It is autolinked and the JavaScript API is the same as on iOS and Android.
+
+- Files are streamed from disk, so a large file is never held in memory. Requests use rustls with the system certificate store.
+- Raw and multipart form uploads, the S3 chunked upload (parallel parts, `existingEtags`, pause, resume, cancel, three attempts per part for network errors, 5xx, 408 and 429), `getFileInfo`, `getAllUploads`, the completion handler and every event are supported.
+- Uploads run while the app is open. There is no background service or notification, so `notification` and `appGroup` are ignored, and nothing is persisted across a restart: `getMultipartS3Uploads` lists the uploads of the running app, and an interrupted upload is resumed by starting it again with `existingEtags`.
+- Cancelling stops sending at once. A request that is already waiting for the server's answer is abandoned rather than interrupted.
+
 # Usage
 
 ```js

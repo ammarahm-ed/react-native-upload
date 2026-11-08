@@ -10,3 +10,5 @@ example
 tmp
 tsconfig.json
 
+/desktop/target
+/desktop/Cargo.lock

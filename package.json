@@ -19,6 +19,11 @@
     "react-native",
     "react"
   ],
+  "codegenConfig": {
+    "name": "RNFileUploaderSpec",
+    "type": "modules",
+    "jsSrcsDir": "desktop/spec"
+  },
   "peerDependencies": {
     "react": "*",
     "react-native": ">=0.47.0"

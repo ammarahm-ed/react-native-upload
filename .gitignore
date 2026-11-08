@@ -58,3 +58,5 @@ android/app/libs
 # project
 dist/
 .npmrc
+desktop/target/
+desktop/Cargo.lock

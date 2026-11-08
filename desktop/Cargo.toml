@@ -1,0 +1,13 @@
+[package]
+name = "rn-gpui-file-uploader"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rn-gpui-module = { version = "0.1" }
+ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"] }
+mime_guess = "2"
+futures = "0.3"
+
+[build-dependencies]
+rn-gpui-module-build = { version = "0.1" }
